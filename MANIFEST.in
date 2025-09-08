@@ -1,0 +1,2 @@
+recursive-include saterys/static *
+recursive-include saterys/nodes *.py

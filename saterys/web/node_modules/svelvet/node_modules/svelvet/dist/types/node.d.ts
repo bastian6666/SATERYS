@@ -1,0 +1,68 @@
+import type { Writable } from 'svelte/store';
+import type { AnchorStore, CSSDimensionString, InitialDimensions, Connections, Direction } from '.';
+import type { XYPair, NodeKey, Dimensions, CSSColorString, GroupKey } from '.';
+import type { ComponentType } from 'svelte';
+export interface Node {
+    id: NodeKey;
+    rotation: Writable<number>;
+    position: Writable<XYPair>;
+    moving: Writable<boolean>;
+    label: Writable<string>;
+    dimensions: Dimensions;
+    inputs: Writable<number>;
+    outputs: Writable<number>;
+    anchors: AnchorStore;
+    group: Writable<GroupKey | null>;
+    collapsed: Writable<boolean>;
+    resizingWidth: Writable<boolean>;
+    resizingHeight: Writable<boolean>;
+    rotating: Writable<boolean>;
+    editable: Writable<boolean>;
+    locked: Writable<boolean>;
+    recalculateAnchors: (direction?: Direction) => void;
+    resizable: Writable<boolean>;
+    zIndex: Writable<number>;
+    edge: ComponentType | null;
+    direction: Writable<'TD' | 'LR'>;
+    borderRadius: Writable<number>;
+    borderWidth: Writable<number>;
+    connections: Writable<Connections>;
+    bgColor: Writable<CSSColorString | null>;
+    borderColor: Writable<CSSColorString | null>;
+    selectionColor: Writable<CSSColorString | null>;
+    textColor: Writable<CSSColorString | null>;
+}
+export interface NodeConfig {
+    id?: string | number;
+    dimensions?: InitialDimensions;
+    position?: {
+        x: number;
+        y: number;
+    };
+    direction?: 'TD' | 'LR';
+    zIndex?: number;
+    label?: string;
+    group?: GroupKey;
+    editable?: boolean;
+    resizable?: boolean;
+    inputs?: number;
+    outputs?: number;
+    locked?: boolean;
+    selectionColor?: CSSColorString;
+    component?: ComponentType;
+    width?: number;
+    height?: number;
+    header?: true;
+    props?: object;
+    borderColor?: CSSColorString;
+    bgColor?: CSSColorString;
+    useDefaults?: boolean;
+    borderRadius?: number;
+    borderWidth?: number;
+    rotation?: number;
+    textColor?: CSSColorString;
+    connections?: Connections;
+    edge?: ComponentType;
+}
+export type UserDimension = number | CSSDimensionString;
+export type WritableNode = Writable<Node>;

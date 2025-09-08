@@ -1,0 +1,6 @@
+fastapi==0.116.1
+matplotlib==3.4.2
+numpy==1.21.2
+pydantic==1.10.22
+rasterio==1.2.10
+rio_tiler==7.8.1

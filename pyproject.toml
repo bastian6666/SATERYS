@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saterys"
+version = "0.1.0"
+description = "Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Your Name", email = "you@example.com" }]
+requires-python = ">=3.7,<3.8"
+
+dependencies = [
+  "fastapi<0.104",
+  "uvicorn[standard]>=0.20,<0.24",
+  "pydantic<2",
+  "numpy<1.24",
+  "rasterio<1.3",
+  "rio-tiler<6",
+]
+
+[project.scripts]
+saterys = "saterys.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+# 📦 Only package `saterys*` (prevents the “Multiple top-level packages” error)
+[tool.setuptools.packages.find]
+include = ["saterys*"]
+
+# Ship non-Python files
+[tool.setuptools.package-data]
+saterys = [
+  "nodes/*.py",
+  "static/*",
+  "static/**/*",
+]
