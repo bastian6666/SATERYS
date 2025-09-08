@@ -1,78 +1,50 @@
 Metadata-Version: 2.1
 Name: saterys
-Version: 0.1.0
+Version: 0.2.0
 Summary: Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS
-Author-email: Your Name <you@example.com>
+Author-email: Sebastian Sanchez Bernal <bastian@example.com>
 License: MIT
-Requires-Python: <3.8,>=3.7
+Project-URL: Homepage, https://github.com/yourusername/saterys
+Project-URL: Repository, https://github.com/yourusername/saterys
+Project-URL: Issues, https://github.com/yourusername/saterys/issues
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: Topic :: Scientific/Engineering :: GIS
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
 Description-Content-Type: text/markdown
+License-File: LICENSE
 
-# 🛰️ SIDESAT — Scalable Interactive Design Environment for SATellite imagery
+# SATERYS
 
-**SIDESAT** is a developer-first playground for building, connecting, and testing satellite image processing pipelines.  
-It’s not production-ready yet — this repo is meant for **researchers, tinkerers, and devs** who want to experiment with node-based workflows.
+[![PyPI version](https://img.shields.io/pypi/v/saterys.svg?style=flat-square)](https://pypi.org/project/saterys/)
+[![Python versions](https://img.shields.io/pypi/pyversions/saterys.svg?style=flat-square)](https://pypi.org/project/saterys/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/yourusername/saterys/ci.yml?style=flat-square&label=build)](https://github.com/yourusername/saterys/actions)
 
----
-
-## ✨ What is it?
-
-- 🧩 **Node editor (Svelvet)** — visually build pipelines like Lego blocks  
-- ⚡ **FastAPI backend** — modular ops: blur, unsharp, NDVI, and more  
-- 🗺️ **Leaflet map integration** — preview rasters on an interactive map  
-- 🔌 **Drop-in plugins** — add Python files in `nodes/` to extend capabilities  
+**SATERYS** is a geospatial pipeline builder combining a **Svelte** frontend with a **FastAPI** backend.  
+It provides an interactive node-based canvas for connecting operations, executing Python plugins, and visualizing raster data directly on a Leaflet map.
 
 ---
 
-## 🚀 Running in Dev Mode
+## ✨ Features
 
-### 1. Backend (FastAPI + Uvicorn)
+- 🎨 **Interactive Node Editor** using [Svelvet](https://svelvet.io/).
+- ⚡ **FastAPI Backend** for plugin execution and REST endpoints.
+- 🛰 **Geospatial Preview** with Leaflet, serving raster tiles via [rio-tiler](https://github.com/cogeotiff/rio-tiler).
+- 🔌 **Extensible Plugin System**: add your own nodes by dropping Python files into a `nodes/` folder.
+- 🌙 **Dark/Light Theme** toggle.
+- 📦 Fully **pip-installable** with built frontend assets included.
+
+---
+
+## 📦 Installation
 
 ```bash
-# from repo root
-uvicorn app:app --reload --port 8000
-````
-
-Backend will be live at:
-👉 [http://127.0.0.1:8000](http://127.0.0.1:8000)
-
----
-
-### 2. Frontend (Svelvet + Vite)
-
-```bash
-cd frontend-svelvet
-npm install
-npm run dev
-```
-
-Frontend will be live at:
-👉 [http://localhost:5173](http://localhost:5173)
-
-It proxies API requests to the backend.
-
----
-
-## 📂 Project Structure
-
-```
-app.py             # FastAPI backend
-nodes/             # Drop-in Python ops (plugins)
-frontend-svelvet/  # Svelte + Svelvet UI (dev mode)
-```
-
----
-
-## 🔮 Roadmap
-
-* [ ] One-command run (`sidesat run`)
-* [ ] More analysis ops (NDWI, PCA, texture metrics)
-* [ ] Layer controls (opacity, palettes, band mapping)
-* [ ] Docker image for easy deploy
-
----
-
-## 📜 License
-
-MIT — free for research and experimentation.
-
-
+pip install saterys
+# SATERYS

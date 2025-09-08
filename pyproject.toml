@@ -1,24 +1,45 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "build"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "saterys"
-version = "0.1.0"
+version = "0.2.1"  # bump each release
 description = "Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Your Name", email = "you@example.com" }]
-requires-python = ">=3.7,<3.8"
+
+authors = [
+  { name = "Sebastian Sanchez Bernal", email = "bastian@example.com" }
+]
+
+requires-python = ">=3.9"
 
 dependencies = [
-  "fastapi<0.104",
-  "uvicorn[standard]>=0.20,<0.24",
-  "pydantic<2",
-  "numpy<1.24",
-  "rasterio<1.3",
-  "rio-tiler<6",
+  "fastapi>=0.110",          # modern FastAPI (with Pydantic v2 support)
+  "uvicorn[standard]>=0.23", # ASGI server
+  "pydantic>=2",             # data validation
+  "numpy>=1.26",             # wheels available for Python 3.12
+  "rio-tiler>=6",            # raster tiling & preview
+  "rasterio>=1.3",           # geospatial raster I/O
 ]
+
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: GIS",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/saterys"
+Repository = "https://github.com/yourusername/saterys"
+Issues = "https://github.com/yourusername/saterys/issues"
 
 [project.scripts]
 saterys = "saterys.cli:main"
@@ -26,11 +47,9 @@ saterys = "saterys.cli:main"
 [tool.setuptools]
 include-package-data = true
 
-# 📦 Only package `saterys*` (prevents the “Multiple top-level packages” error)
 [tool.setuptools.packages.find]
 include = ["saterys*"]
 
-# Ship non-Python files
 [tool.setuptools.package-data]
 saterys = [
   "nodes/*.py",
