@@ -3,34 +3,54 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*.*.*"  # e.g., v0.2.1
+      - "v*.*.*"  # e.g. v0.2.1
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
         with:
-          # enable this if your frontend is a submodule
           submodules: recursive
 
-      - name: Locate frontend
+      - name: Debug tree
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f -name package.json -o -name index.html || true
+          find . -maxdepth 3 -type d -name dist || true
+
+      # Detect where the frontend lives OR if a prebuilt ./dist exists at repo root
+      - name: Locate frontend / dist
         id: locate
         run: |
-          if [ -f web/package.json ]; then
+          if [ -f package.json ]; then
+            echo "WEB_DIR=." >> $GITHUB_ENV
+            echo "Found package.json at repo root"
+          elif [ -f web/package.json ]; then
             echo "WEB_DIR=web" >> $GITHUB_ENV
+            echo "Found package.json in web/"
           elif [ -f saterys/web/package.json ]; then
             echo "WEB_DIR=saterys/web" >> $GITHUB_ENV
+            echo "Found package.json in saterys/web/"
           else
             echo "WEB_DIR=" >> $GITHUB_ENV
+            echo "No package.json found"
           fi
-          echo "Frontend dir: ${WEB_DIR:-<none>}"
 
-      - name: Set up Node (if frontend present)
+          # If no WEB_DIR but root ./dist exists, use it as prebuilt artifacts
+          if [ -z "${WEB_DIR}" ] && [ -f dist/index.html ]; then
+            echo "DIST_DIR=dist" >> $GITHUB_ENV
+            echo "Using prebuilt ./dist at repo root"
+          elif [ -n "${WEB_DIR}" ]; then
+            echo "DIST_DIR=${WEB_DIR}/dist" >> $GITHUB_ENV
+          else
+            echo "DIST_DIR=" >> $GITHUB_ENV
+          fi
+
+      - name: Set up Node (only if we have a frontend to build)
         if: env.WEB_DIR != ''
         uses: actions/setup-node@v4
         with:
@@ -38,23 +58,30 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ${{ env.WEB_DIR }}/package-lock.json
 
-      - name: Build Svelte frontend (if present)
+      - name: Build Svelte frontend (only if WEB_DIR set)
         if: env.WEB_DIR != ''
         working-directory: ${{ env.WEB_DIR }}
         run: |
           npm ci
           npm run build
 
-      - name: Copy frontend into package (if built)
-        if: env.WEB_DIR != ''
+      - name: Copy frontend into package
         run: |
           mkdir -p saterys/static
-          cp -r "${WEB_DIR}/dist/"* saterys/static/
 
-      - name: Verify static assets exist
-        run: |
+          if [ -n "${DIST_DIR}" ] && [ -f "${DIST_DIR}/index.html" ]; then
+            # copy everything (keeps subdirs, preserves timestamps)
+            rsync -a "${DIST_DIR}/" saterys/static/
+          else
+            echo "❌ No dist found. Either:"
+            echo "   - have a frontend and let CI build it (ensure package.json exists), OR"
+            echo "   - commit or upload a prebuilt ./dist with index.html at repo root."
+            exit 1
+          fi
+
+          # final check
           test -f saterys/static/index.html || {
-            echo "❌ saterys/static/index.html not found. Build or commit frontend assets before publishing."
+            echo '❌ saterys/static/index.html missing after copy'
             exit 1
           }
 
