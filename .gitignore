@@ -45,3 +45,10 @@ web/node_modules/
 
 # Node
 web/node_modules/
+
+# Node
+saterys/web/node_modules/
+
+node_modules/
+
+.pypi/
