@@ -3,7 +3,7 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*.*.*"   # e.g., v0.2.1
+      - "v*.*.*"   # e.g., v0.2.3
 
 jobs:
   build-and-publish:
@@ -13,28 +13,42 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
-      # (Optional) quick directory sanity
-      - name: Debug tree
+      - name: Debug tree (quick sanity)
         run: |
           pwd && ls -la
-          test -f web/package.json && echo "Found web/package.json" || echo "web/package.json NOT found"
-          test -f web/index.html && echo "Found web/index.html" || echo "web/index.html NOT found"
+          test -f web/package.json && echo "✅ web/package.json found" || echo "❌ web/package.json missing"
+          test -f web/package-lock.json && echo "✅ web/package-lock.json found" || echo "⚠️ no package-lock (ok)"
+          test -d web && echo "📁 web exists"
+          test -d saterys && echo "📁 saterys exists"
 
-      - name: Set up Node
+      # Use cache only if a lockfile exists (prevents the “paths not resolved” error)
+      - name: Set up Node (cached if lockfile)
+        if: ${{ hashFiles('web/package-lock.json', 'web/pnpm-lock.yaml', 'web/yarn.lock') != '' }}
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            web/package-lock.json
+            web/pnpm-lock.yaml
+            web/yarn.lock
+
+      - name: Set up Node (no cache)
+        if: ${{ hashFiles('web/package-lock.json', 'web/pnpm-lock.yaml', 'web/yarn.lock') == '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: Build Svelte frontend (web/)
         working-directory: web
         run: |
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
           npm run build
+          test -f dist/index.html || { echo "❌ web/dist/index.html not found after build"; exit 1; }
 
       - name: Copy frontend into Python package
         run: |
           mkdir -p saterys/static
-          test -f web/dist/index.html || { echo "❌ web/dist/index.html not found after build"; exit 1; }
           rsync -a web/dist/ saterys/static/
           test -f saterys/static/index.html || { echo "❌ saterys/static/index.html missing after copy"; exit 1; }
 
