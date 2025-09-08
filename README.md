@@ -25,3 +25,4 @@ It provides an interactive node-based canvas for connecting operations, executin
 
 ```bash
 pip install saterys
+# SATERYS
