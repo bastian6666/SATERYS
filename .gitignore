@@ -36,3 +36,6 @@ dist-ssr
 *.gz
 *.vrt
 *.aux
+
+# Node
+web/node_modules/
