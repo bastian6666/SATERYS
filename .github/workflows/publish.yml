@@ -3,98 +3,69 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*.*.*"  # v0.2.6 etc.
+      - "v*"
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    env:
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+      TWINE_USERNAME: __token__
 
     steps:
-      - name: Check out
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Locate frontend and existing builds
-        run: |
-          set -e
-          FRONT=""
-          if [ -f saterys/web/package.json ]; then
-            FRONT="saterys/web"
-          elif [ -f web/package.json ]; then
-            FRONT="web"
-          fi
-          echo "FRONTEND_DIR=${FRONT}" >> $GITHUB_ENV
-          echo "FRONTEND_DIR=${FRONT}"
-
-          # show what we have
-          [ -n "${FRONT}" ] && ls -la "${FRONT}" || true
-          [ -f dist/index.html ] && echo "Found root dist/index.html" || echo "No root dist/"
-          [ -f saterys/static/index.html ] && echo "Found saterys/static/index.html (prebuilt)" || true
-
-      # Set up Node (cached) only if we found a frontend + a lockfile
-      - name: Set up Node (cached)
-        if: env.FRONTEND_DIR != '' && hashFiles(format('{0}/package-lock.json', env.FRONTEND_DIR), format('{0}/pnpm-lock.yaml', env.FRONTEND_DIR), format('{0}/yarn.lock', env.FRONTEND_DIR)) != ''
+      # ---------- Frontend (Svelte) ----------
+      # Only run if the saterys/web frontend exists
+      - name: Setup Node
+        if: ${{ hashFiles('saterys/web/package.json') != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: |
-            ${{ env.FRONTEND_DIR }}/package-lock.json
-            ${{ env.FRONTEND_DIR }}/pnpm-lock.yaml
-            ${{ env.FRONTEND_DIR }}/yarn.lock
+          cache-dependency-path: saterys/web/package-lock.json
 
-      # If frontend exists but no lockfile, install without cache
-      - name: Set up Node (no cache)
-        if: env.FRONTEND_DIR != '' && hashFiles(format('{0}/package-lock.json', env.FRONTEND_DIR), format('{0}/pnpm-lock.yaml', env.FRONTEND_DIR), format('{0}/yarn.lock', env.FRONTEND_DIR)) == ''
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      # Build only if a frontend exists
-      - name: Build Svelte frontend
-        if: env.FRONTEND_DIR != ''
-        working-directory: ${{ env.FRONTEND_DIR }}
+      - name: Install web deps
+        if: ${{ hashFiles('saterys/web/package.json') != '' }}
+        working-directory: saterys/web
+        shell: bash
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
-          npm run build
-          test -f dist/index.html || { echo "❌ ${PWD}/dist/index.html not found after build"; exit 1; }
-
-      - name: Copy frontend into Python package
-        run: |
-          set -e
-          mkdir -p saterys/static
-
-          # 1) Prefer freshly built saterys/web/dist
-          if [ -n "${FRONTEND_DIR}" ] && [ -f "${FRONTEND_DIR}/dist/index.html" ]; then
-            echo "Copying ${FRONTEND_DIR}/dist -> saterys/static"
-            rsync -a "${FRONTEND_DIR}/dist/" "saterys/static/"
-          # 2) Else fall back to root-level dist/ if present
-          elif [ -f "dist/index.html" ]; then
-            echo "Copying root dist/ -> saterys/static"
-            rsync -a "dist/" "saterys/static/"
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
           fi
 
-          # Require that static assets exist now
-          test -f saterys/static/index.html || {
-            echo "❌ saterys/static/index.html missing."
-            echo "Either keep frontend at saterys/web (so CI builds), or commit/copy a root dist/ before tagging."
-            exit 1
-          }
+      - name: Build web
+        if: ${{ hashFiles('saterys/web/package.json') != '' }}
+        working-directory: saterys/web
+        run: npm run build
 
-      - name: Set up Python
+      - name: Verify static bundle exists
+        shell: bash
+        run: |
+          test -f saterys/static/index.html || { echo "::error ::saterys/static/index.html not found"; exit 1; }
+
+      # ---------- Python package ----------
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"  # safer for numpy/rasterio wheels
+          python-version: "3.12"
 
-      - name: Build wheel/sdist
+      - name: Install build tools
+        run: python -m pip install -U pip build twine
+
+      - name: Build sdist and wheel
         run: |
-          python -m pip install --upgrade pip build twine
           rm -rf dist build *.egg-info
           python -m build
-          ls -lh dist
+          twine check dist/*
 
       - name: Publish to PyPI
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
-          TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           python -m twine upload --non-interactive dist/*

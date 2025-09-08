@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saterys"
-version = "0.2.7"  # bump each release
+version = "0.2.8"  # bump each release
 description = "Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS"
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,9 +37,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/saterys"
-Repository = "https://github.com/yourusername/saterys"
-Issues = "https://github.com/yourusername/saterys/issues"
+Homepage = "https://github.com/bastian6666/saterys"
+Repository = "https://github.com/bastian6666/saterys"
+Issues = "https://github.com/bastian6666/saterys/issues"
 
 [project.scripts]
 saterys = "saterys.cli:main"

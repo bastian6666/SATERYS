@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: saterys
-Version: 0.2.0
+Version: 0.2.7
 Summary: Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS
 Author-email: Sebastian Sanchez Bernal <bastian@example.com>
 License: MIT
@@ -25,7 +25,7 @@ License-File: LICENSE
 [![PyPI version](https://img.shields.io/pypi/v/saterys.svg?style=flat-square)](https://pypi.org/project/saterys/)
 [![Python versions](https://img.shields.io/pypi/pyversions/saterys.svg?style=flat-square)](https://pypi.org/project/saterys/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/yourusername/saterys/ci.yml?style=flat-square&label=build)](https://github.com/yourusername/saterys/actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/bastian6666/saterys/ci.yml?style=flat-square&label=build)](https://github.com/bastian6666/saterys/actions)
 
 **SATERYS** is a geospatial pipeline builder combining a **Svelte** frontend with a **FastAPI** backend.  
 It provides an interactive node-based canvas for connecting operations, executing Python plugins, and visualizing raster data directly on a Leaflet map.
