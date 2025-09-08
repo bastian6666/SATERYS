@@ -3,7 +3,7 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*.*.*"   # e.g., v0.2.1
+      - "v*.*.*"  # e.g., v0.2.1
 
 jobs:
   build-and-publish:
@@ -14,29 +14,58 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          # enable this if your frontend is a submodule
+          submodules: recursive
+
+      - name: Locate frontend
+        id: locate
+        run: |
+          if [ -f web/package.json ]; then
+            echo "WEB_DIR=web" >> $GITHUB_ENV
+          elif [ -f saterys/web/package.json ]; then
+            echo "WEB_DIR=saterys/web" >> $GITHUB_ENV
+          else
+            echo "WEB_DIR=" >> $GITHUB_ENV
+          fi
+          echo "Frontend dir: ${WEB_DIR:-<none>}"
+
+      - name: Set up Node (if frontend present)
+        if: env.WEB_DIR != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ${{ env.WEB_DIR }}/package-lock.json
+
+      - name: Build Svelte frontend (if present)
+        if: env.WEB_DIR != ''
+        working-directory: ${{ env.WEB_DIR }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Copy frontend into package (if built)
+        if: env.WEB_DIR != ''
+        run: |
+          mkdir -p saterys/static
+          cp -r "${WEB_DIR}/dist/"* saterys/static/
+
+      - name: Verify static assets exist
+        run: |
+          test -f saterys/static/index.html || {
+            echo "❌ saterys/static/index.html not found. Build or commit frontend assets before publishing."
+            exit 1
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install build tooling
-        run: |
-          python -m pip install --upgrade pip build twine
-
-      - name: Build Svelte frontend
-        working-directory: web
-        run: |
-          npm ci
-          npm run build
-
-      - name: Copy frontend into package
-        run: |
-          mkdir -p saterys/static
-          cp -r web/dist/* saterys/static/
-
       - name: Build wheel/sdist
         run: |
+          python -m pip install --upgrade pip build twine
           rm -rf dist build *.egg-info
           python -m build
           ls -lh dist
@@ -47,4 +76,3 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           python -m twine upload --non-interactive dist/*
-
