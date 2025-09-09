@@ -37,11 +37,13 @@ dist-ssr
 *.vrt
 *.aux
 
-# Node
-web/node_modules/
-
-# Node
-web/node_modules/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
 
 # Node
 web/node_modules/
