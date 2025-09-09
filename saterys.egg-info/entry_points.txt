@@ -1,2 +1,0 @@
-[console_scripts]
-saterys = saterys.cli:main
