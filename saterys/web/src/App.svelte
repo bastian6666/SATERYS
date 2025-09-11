@@ -1,10 +1,10 @@
 <script lang="ts">
-  // @ts-ignore - suppress missing type declarations for 'svelvet' (install or add a .d.ts to provide proper typings)
+  // @ts-ignore
   import { Svelvet, Node } from 'svelvet';
   import { onMount, tick } from 'svelte';
 
   // Leaflet
-  // @ts-ignore - suppress missing type declarations for 'leaflet' (install @types/leaflet to get proper typings)
+  // @ts-ignore
   import * as L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
 
@@ -28,13 +28,9 @@
   let theme: 'dark' | 'light' = 'dark';
   $: (document?.body && (document.body.dataset.theme = theme));
 
-  // Demo nodes
-  let nodes: NodeData[] = [
-    { id: 'n1', position: { x: 120, y: 140 }, label: 'Hello',  type: 'hello',  args: { name: 'world' } },
-    { id: 'n2', position: { x: 420, y: 140 }, label: 'Sum',    type: 'sum',    args: { nums: [1, 2, 3] } },
-    { id: 'n3', position: { x: 720, y: 140 }, label: 'Script', type: 'script', args: { code: "print('hi')" } },
-  ];
-  let nextNodeIndex = 4;
+  // Start with ZERO nodes (changed)
+  let nodes: NodeData[] = [];
+  let nextNodeIndex = 1;
   let edges: EdgeData[] = [];
   let nextEdgeId = 1;
   let pendingSource: string | null = null;
@@ -44,12 +40,11 @@
 
   // Available op types (optionally fetch from backend)
   let TYPES: NodeType[] = [
-    { name: 'hello',  default_args: { name: 'world' } },
-    { name: 'sum',    default_args: { nums: [1, 2, 3] } },
-    { name: 'script', default_args: { code: "print('hello')" } },
+    { name: 'hello',        default_args: { name: 'world' } },
+    { name: 'sum',          default_args: { nums: [1, 2, 3] } },
+    { name: 'script',       default_args: { code: "print('hello')" } },
     { name: 'raster.input', default_args: { path: "" } },
   ];
-
   onMount(async () => {
     try {
       const r = await fetch('/node_types');
@@ -57,6 +52,41 @@
       if (Array.isArray(data?.types)) TYPES = data.types as NodeType[];
     } catch { /* backend optional */ }
   });
+
+  // ----- Field schemas for nicer forms -----
+  type Field =
+    | { key: string; label: string; type: 'string'; placeholder?: string }
+    | { key: string; label: string; type: 'number'; step?: number }
+    | { key: string; label: string; type: 'boolean' }
+    | { key: string; label: string; type: 'textarea'; placeholder?: string; rows?: number }
+    | { key: string; label: string; type: 'array'; itemType?: 'string'|'number'; hint?: string }
+    | { key: string; label: string; type: 'select'; options: string[] };
+
+  const SCHEMAS: Record<string, Field[]> = {
+    hello: [{ key: 'name', label: 'Name', type: 'string', placeholder: 'world' }],
+    sum:   [{ key: 'nums', label: 'Numbers', type: 'array', itemType: 'number', hint: 'e.g., 1,2,3' }],
+    script:[{ key: 'code', label: 'Code', type: 'textarea', rows: 8, placeholder: "print('hello')" }],
+    'raster.input': [{ key: 'path', label: 'Raster path', type: 'string', placeholder: '/path/to.tif' }],
+  };
+
+  function guessSchemaFromDefaults(def: any): Field[] {
+    const fields: Field[] = [];
+    if (!def || typeof def !== 'object') return fields;
+    for (const [k, v] of Object.entries(def)) {
+      if (typeof v === 'string')      fields.push({ key: k, label: k, type: 'string' });
+      else if (typeof v === 'number') fields.push({ key: k, label: k, type: 'number' });
+      else if (typeof v === 'boolean')fields.push({ key: k, label: k, type: 'boolean' });
+      else if (Array.isArray(v))      fields.push({ key: k, label: k, type: 'array', itemType: typeof v[0] === 'number' ? 'number' : 'string' });
+      else                             fields.push({ key: k, label: k, type: 'textarea' }); // fallback JSON-ish
+    }
+    return fields;
+  }
+  function schemaForType(t: string): Field[] {
+    const known = SCHEMAS[t];
+    if (known) return known;
+    const def = TYPES.find(x => x.name === t)?.default_args;
+    return guessSchemaFromDefaults(def ?? {});
+  }
 
   // Init argsText
   $: {
@@ -214,13 +244,15 @@
     running = false;
   }
 
+  // ----- Node add/connect -----
   function addNode() {
     const id = `n${nextNodeIndex++}`;
     const t = TYPES[0] || { name: 'hello', default_args: { name: id } };
     const x = 120 + (nodes.length % 6) * 260;
     const y = 140 + Math.floor(nodes.length / 6) * 140;
     const defaults = JSON.parse(JSON.stringify(t.default_args || {}));
-    nodes = [...nodes, { id, position: { x, y }, label: `Node ${id}`, type: t.name, args: defaults }];
+    const label = `${t.name} (${id})`;
+    nodes = [...nodes, { id, position: { x, y }, label, type: t.name, args: defaults }];
     argsText[id] = JSON.stringify(defaults, null, 2);
   }
 
@@ -289,25 +321,25 @@
       if (!map && mapEl) {
         map = L.map(mapEl, { zoomControl: true, attributionControl: false }).setView([0, 0], 2);
 
-        const baseLayers = {
-          "OpenStreetMap": L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            opacity: 0.8, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap contributors'
+        const baseLayers: Record<string, L.TileLayer> = {
+          "🗺️ OpenStreetMap": L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            opacity: 0.9, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap contributors'
           }),
-          "OpenStreetMap (Dark)": L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            opacity: 0.3, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap contributors'
+          "🌌 OSM (Dark-ish)": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            opacity: 0.95, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap, © CartoDB'
           }),
-          "CartoDB Positron": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-            opacity: 0.8, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap contributors, © CartoDB'
+          "🛰️ Esri World Imagery": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            opacity: 1.0, minZoom: 1, maxZoom: 19, attribution: 'Tiles © Esri'
           }),
-          "CartoDB Dark": L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            opacity: 0.8, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap contributors, © CartoDB'
+          "🗺️ Carto Positron": L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            opacity: 0.95, minZoom: 1, maxZoom: 22, attribution: '© OpenStreetMap, © CartoDB'
           }),
-          "OpenTopoMap": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-            opacity: 0.8, minZoom: 1, maxZoom: 17, attribution: '© OpenStreetMap contributors, © OpenTopoMap'
+          "⛰️ OpenTopoMap": L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+            opacity: 0.95, minZoom: 1, maxZoom: 17, attribution: '© OpenStreetMap, © OpenTopoMap'
           })
         };
 
-        baseLayers["OpenStreetMap (Dark)"].addTo(map);
+        baseLayers["🛰️ Esri World Imagery"].addTo(map); // start with imagery
 
         layerControl = L.control.layers(baseLayers, {}, { position: 'topright', collapsed: false });
         layerControl.addTo(map);
@@ -338,8 +370,9 @@
     if (!pth) { alert('No raster path available. Run the pipeline or set args.path for raster.input.'); return; }
 
     const id = n.id;
-     await fetch('/preview/register', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    await fetch('/preview/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id, path: pth })
     });
 
@@ -373,46 +406,131 @@
     overlayLayers.clear();
   }
 
-  // Modal
+  // -------- Modal: edit args (form + advanced JSON) --------
   let editingNode: NodeData | null = null;
   let editingBuffer = "";
+  let editingSchema: Field[] = [];
+  let editingForm: Record<string, any> = {};
+  let showAdvancedJSON = false;
 
-  function nodeByIdStrict(id: string): NodeData {
-  const n = nodes.find(n => n.id === id);
-  if (!n) throw new Error(`Node not found: ${id}`);
-  return n;
+  function openArgsModal(n: NodeData) {
+    editingNode = n;
+    editingSchema = schemaForType(n.type);
+    editingForm = {};
+    // Seed form values from node args or defaults
+    const defaults = TYPES.find(t => t.name === n.type)?.default_args ?? {};
+    const src = { ...defaults, ...(n.args ?? {}) };
+    for (const f of editingSchema) {
+      editingForm[f.key] = src[f.key];
+    }
+    editingBuffer = JSON.stringify(n.args ?? {}, null, 2);
+    showAdvancedJSON = false;
+  }
+
+  function applyFormToNode() {
+    if (!editingNode) return;
+    const out: any = {};
+    // Build args according to schema
+    for (const f of editingSchema) {
+      let v = editingForm[f.key];
+      if (f.type === 'number') v = Number(v);
+      if (f.type === 'array') {
+        if (Array.isArray(v)) out[f.key] = v;
+        else if (typeof v === 'string') {
+          const parts = v.split(',').map(s => s.trim()).filter(Boolean);
+          out[f.key] = (f.itemType === 'number') ? parts.map(Number) : parts;
+        } else {
+          out[f.key] = [];
+        }
+        continue;
+      }
+      if (f.type === 'boolean') v = !!v;
+      out[f.key] = v;
+    }
+    editingNode.args = out;
+    argsText[editingNode.id] = JSON.stringify(out, null, 2);
+  }
+
+  function saveArgsModal() {
+    if (!editingNode) return;
+    if (showAdvancedJSON) {
+      try {
+        const parsed = JSON.parse(editingBuffer || "{}");
+        editingNode.args = parsed;
+        argsText[editingNode.id] = JSON.stringify(parsed, null, 2);
+        editingNode = null;
+      } catch {
+        alert("Invalid JSON");
+      }
+    } else {
+      applyFormToNode();
+      editingNode = null;
+    }
+  }
+
+  // Utilities for node positions
+  const nodeByIdStrict = (id: string): NodeData => {
+    const n = nodes.find(n => n.id === id);
+    if (!n) throw new Error(`Node not found: ${id}`);
+    return n;
+  };
+
+
+  function taRows(f: Field): number {
+  return (f as any).rows ?? 6;
+}
+function taPlaceholder(f: Field): string {
+  return (f as any).placeholder ?? '';
+}
+function arrHint(f: Field): string {
+  return (f as any).hint ?? 'comma-separated';
+}
+function arrItemType(f: Field): string {
+  return (f as any).itemType ?? 'values';
+}
+function selectOptions(f: Field): string[] {
+  return (f as any).options ?? [];
 }
 
 </script>
 
-<!-- APP ROOT (viewport-anchored full bleed) -->
+<!-- APP ROOT -->
 <div class="app-root">
-  <!-- Header -->
-  <header class="app-header">
-    <button class="icon-btn" title="Toggle sidebar" on:click={toggleSidebar}>
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
-    </button>
-
-    <div class="brand">
-      <span class="title">SATERYS</span>
+  <!-- Header (styled like manual labeler) -->
+  <header class="topbar glass">
+    <div class="left">
+      <button class="icon-btn ghost" title="Toggle sidebar" on:click={toggleSidebar}>
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+      </button>
+      <div class="brand">
+        <span class="title">SATERYS</span>
+      </div>
     </div>
 
-    <div class="header-actions">
+    <div class="center">
+      <div class="hint">Build pipelines — click a node’s ◀ / ▶ to connect</div>
+    </div>
+
+    <div class="right">
       <button class="icon-btn" title={running ? 'Running…' : 'Run pipeline'} on:click={runPipeline} disabled={running}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
-        <span class="btn-label">Run</span>
+        <span>Run</span>
       </button>
       <button class="icon-btn" title="Toggle logs" on:click={() => showLogs = !showLogs}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 5h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zm2 4l3 3-3 3m5 0h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span class="btn-label">Logs</span>
+        <span>Logs</span>
       </button>
       <button class="icon-btn" title="Clear map layers" on:click={clearOverlayLayers} disabled={overlayLayers.size === 0}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l9 5-9 5-9-5 9-5zm0 8l9 5-9 5-9-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round"/></svg>
-        <span class="btn-label">Layers</span>
+        <span>Layers</span>
       </button>
       <button class="icon-btn" title="Toggle theme" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
-        <span class="btn-label">Theme</span>
+        <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+      </button>
+      <button class="icon-btn primary" title="Add node" on:click={addNode}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        <span>Add</span>
       </button>
     </div>
   </header>
@@ -494,6 +612,7 @@
                     const t = TYPES.find(tt => tt.name === nodes[i].type);
                     const defaults = t?.default_args ?? {};
                     nodes[i].args = JSON.parse(JSON.stringify(defaults));
+                    nodes[i].label = `${nodes[i].type} (${n.id})`;
                     argsText[n.id] = JSON.stringify(nodes[i].args, null, 2);
                   }}>
                     {#each TYPES as t}
@@ -501,8 +620,8 @@
                     {/each}
                   </select>
 
-                  <!-- big editor -->
-                  <button class="edit-btn" on:click={() => { editingNode = n; editingBuffer = argsText[n.id]; }}>📝</button>
+                  <!-- field editor (modal) -->
+                  <button class="edit-btn" on:click={() => openArgsModal(n)}>⚙</button>
 
                   <!-- map preview -->
                   <button class="preview-btn" title="Preview on map" on:click={() => previewNode(n, i)}>👁</button>
@@ -511,7 +630,7 @@
             </Node>
           {/each}
 
-          <!-- Edges overlay sized to visible viewport -->
+          <!-- Edges overlay (fixed duplicate loop bug) -->
           <svg class="edges-overlay" viewBox={`0 0 ${viewW} ${viewH}`} preserveAspectRatio="none">
             {#key positionsKey}
               <defs>
@@ -519,26 +638,20 @@
                   <path d="M 0 0 L 10 5 L 0 10 z" />
                 </marker>
               </defs>
-
-             {#each edges as e (e.id)}
               {#each edges as e (e.id)}
-              {#if nodeById(e.source) && nodeById(e.target)}
-                {@const s = nodeByIdStrict(e.source)}
-                {@const t = nodeByIdStrict(e.target)}
-                <path
-                  d={`M ${rightX(s)} ${midY(s)}
-                      C ${rightX(s)+60} ${midY(s)},
-                        ${leftX(t)-60} ${midY(t)},
-                        ${leftX(t)} ${midY(t)}`}
-                  class="cable"
-                  marker-end="url(#arrow)"
-                />
-              {/if}
-            {/each}
-
-
-            {/each}
-
+                {#if nodeById(e.source) && nodeById(e.target)}
+                  {@const s = nodeByIdStrict(e.source)}
+                  {@const t = nodeByIdStrict(e.target)}
+                  <path
+                    d={`M ${rightX(s)} ${midY(s)}
+                        C ${rightX(s)+60} ${midY(s)},
+                          ${leftX(t)-60} ${midY(t)},
+                          ${leftX(t)} ${midY(t)}`}
+                    class="cable"
+                    marker-end="url(#arrow)"
+                  />
+                {/if}
+              {/each}
             {/key}
           </svg>
         </Svelvet>
@@ -551,30 +664,62 @@
     </div>
   </div>
 
-  <!-- Modal editor -->
+  <!-- Args Modal (Form + Advanced JSON) -->
   {#if editingNode}
     <div class="modal-backdrop" on:click={() => editingNode = null}></div>
     <div class="modal" on:click|stopPropagation>
-      <h3>Edit Args for {editingNode.label} ({editingNode.type})</h3>
-      <textarea bind:value={editingBuffer}></textarea>
+      <div class="modal-head">
+        <h3>Edit Args — {editingNode.label}</h3>
+        <div class="seg">
+          <button class:seg-active={!showAdvancedJSON} on:click={() => showAdvancedJSON = false}>Form</button>
+          <button class:seg-active={showAdvancedJSON} on:click={() => showAdvancedJSON = true}>Advanced JSON</button>
+        </div>
+      </div>
+
+      {#if !showAdvancedJSON}
+        <div class="form-grid">
+          {#each editingSchema as f}
+            <div class="form-row">
+              <label>{f.label}</label>
+              {#if f.type === 'string'}
+                <input type="text" bind:value={editingForm[f.key]} placeholder={f.placeholder ?? ''} />
+              {:else if f.type === 'number'}
+                <input type="number" bind:value={editingForm[f.key]} step={f.step ?? 1} />
+              {:else if f.type === 'boolean'}
+                <label class="switch">
+                  <input type="checkbox" bind:checked={editingForm[f.key]} />
+                  <span></span>
+                </label>
+              {:else if f.type === 'textarea'}
+                <textarea rows={taRows(f)}
+          bind:value={editingForm[f.key]}
+          placeholder={taPlaceholder(f)}></textarea>
+              {:else if f.type === 'array'}
+                <input type="text" bind:value={editingForm[f.key]} placeholder={arrHint(f)} />
+                <small class="muted">Comma-separated {arrItemType(f)}</small>
+              {:else if f.type === 'select'}
+                <select bind:value={editingForm[f.key]}>
+                {#each selectOptions(f) as opt}
+                  <option value={opt}>{opt}</option>
+                {/each}
+              </select>
+
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {:else}
+        <textarea class="json-area" bind:value={editingBuffer}></textarea>
+      {/if}
+
       <div class="modal-actions">
-        <button on:click={() => {
-          if (!editingNode) return;
-          try {
-            const node = editingNode;
-            node.args = JSON.parse(editingBuffer || "{}");
-            argsText[node.id] = JSON.stringify(node.args, null, 2);
-            editingNode = null;
-          } catch {
-            alert("Invalid JSON");
-          }
-        }}>Save</button>
-        <button on:click={() => editingNode = null}>Cancel</button>
+        <button class="btn" on:click={() => editingNode = null}>Cancel</button>
+        <button class="btn primary" on:click={saveArgsModal}>Save</button>
       </div>
     </div>
   {/if}
 
-  <!-- Logs Drawer (hidden by default) -->
+  <!-- Logs Drawer -->
   <div class="logs-drawer" data-open={showLogs ? 'true' : 'false'}>
     <div class="logs-header">
       <div class="logs-title">
@@ -609,148 +754,93 @@
       {/if}
     </div>
   </div>
-</div> <!-- /.app-root -->
+</div>
 
 <style>
-  /* Color Variables */
+  /* Color Variables (harmonized with manual labeler look) */
   :root {
-    --salmon: #FF6B35;
-    --orange: #FF8C00;
-    --dark-pink: #C71585;
-    --dark-purple: #4B0082;
-    --black: #000000;
-    --space-dark: #0B0C10;
-    --space-blue: #1F2833;
-    --light-gray: #C5C6C7;
-    --white: #FFFFFF;
-    --gradient-space: linear-gradient(135deg, var(--space-dark) 0%, var(--dark-purple) 100%);
-    --gradient-accent: linear-gradient(45deg, var(--salmon) 0%, var(--orange) 50%, var(--dark-pink) 100%);
+    --bg:#0b0e11;
+    --panel:#101418;
+    --muted:#6b7280;
+    --text:#e5e7eb;
+    --accent:#60a5fa;
+    --border:#1f2937;
+    --gradient-accent: linear-gradient(45deg, #60a5fa, #a78bfa);
   }
 
-  /* Reset any template container centering */
   :global(html, body, #app) { height: 100%; width: 100%; }
-  :global(body) { margin: 0; background: #0f1216; color: #e8e8e8; }
-  :global(main), :global(.page), :global(.container), :global(.content), :global(.wrapper) {
-    max-width: none !important; width: 100% !important; margin: 0 !important; padding: 0 !important;
-  }
+  :global(body) { margin: 0; background: var(--bg); color: var(--text); }
 
-  /* ==== Viewport-anchored root (full browser area) ==== */
-  .app-root {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    width: 100vw;
-    height: 100vh;
-    overflow: hidden; /* internal panels scroll instead */
-  }
-  @supports (height: 100svh) {
-    .app-root { height: 100svh; }
-  }
+  .app-root { position: fixed; inset: 0; display: flex; flex-direction: column; width: 100vw; height: 100vh; overflow: hidden; }
+  @supports (height: 100svh) { .app-root { height: 100svh; } }
 
-  /* Header */
-  .app-header {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 8px;
-    height: 56px;
-    padding: 0 10px;
-    background: var(--black);
-    border-bottom: 1px solid #1a1a1a;
-    flex: 0 0 56px;
+  /* ======= Header (glassy topbar) ======= */
+  .topbar {
+    display:flex; align-items:center; justify-content:space-between;
+    height:58px; padding:0 10px; border-bottom:1px solid var(--border);
+    background: rgba(16,20,24,0.92); backdrop-filter: blur(6px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
   }
-  .brand { display: inline-flex; align-items: center; gap: 8px; user-select: none; }
-  .satellite-icon { font-size: 18px; color: var(--light-gray); }
-  .title {
-    font-size: 20px; font-weight: 800; letter-spacing: .8px;
-    background: var(--gradient-accent);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
-  .header-actions { display: inline-flex; align-items: center; gap: 8px; }
-  .header-actions .icon-btn:last-child {
-    margin-right: 12px;
+  .left, .center, .right { display:flex; align-items:center; gap:10px; }
+  .center { flex:1; justify-content:center; }
+  .hint { color:#aab3bf; font-size:12px; opacity:.9; }
+  .brand .title {
+    font-weight:800; letter-spacing:.6px; font-size:18px;
+    background: var(--gradient-accent); -webkit-background-clip:text; -webkit-text-fill-color:transparent;
   }
   .icon-btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 6px 10px; font-size: 12px; line-height: 1; border: 1px solid #2a2f36;
-    border-radius: 8px; background: #12161c; color: #d9d9d9; cursor: pointer;
+    display:inline-flex; align-items:center; gap:6px; padding:6px 10px; font-size:12px; line-height:1;
+    border:1px solid var(--border); border-radius:10px; background:#111827; color:#e5e7eb; cursor:pointer;
   }
-  .icon-btn:disabled { opacity: .6; cursor: default; }
-  .icon-btn:hover { border-color: #3a414b; background: #151a22; }
-  .btn-label { font-weight: 600; }
+  .icon-btn:hover { background:#0f172a; }
+  .icon-btn:disabled { opacity:.6; cursor: default; }
+  .icon-btn.primary { border-color:#3b82f6; }
+  .icon-btn.ghost { background:transparent; border-color:var(--border); }
 
-  /* Main frame: sidebar + work area */
+  /* ======= Main frame: sidebar + work ======= */
   .main {
     --sidebar-w: 260px;
-    display: grid;
-    grid-template-columns: var(--sidebar-w) 1fr;
-    flex: 1 1 auto;
-    min-height: 0; /* allow children to shrink properly */
-    width: 100%;
-    margin-right: 16px; 
+    display: grid; grid-template-columns: var(--sidebar-w) 1fr;
+    flex: 1 1 auto; min-height: 0; width: 100%;
   }
   .main[data-collapsed="true"] { --sidebar-w: 56px; }
 
   .sidebar {
-    background: #0d1117; border-right: 1px solid #1a1f27;
-    padding: 10px; overflow: auto;
-    display: flex; flex-direction: column; gap: 14px;
+    background: var(--panel); border-right: 1px solid var(--border);
+    padding: 10px; overflow: auto; display: flex; flex-direction: column; gap: 14px;
   }
   .sidebar[data-collapsed="true"] .txt { display: none; }
   .sidebar[data-collapsed="true"] .section-title { justify-content: center; }
   .sidebar[data-collapsed="true"] .tool { justify-content: center; padding: 8px 0; }
 
-  .section-title {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; text-transform: uppercase; letter-spacing: .7px;
-    color: #aab3bf; margin-bottom: 8px;
-  }
+  .section-title { display: flex; align-items: center; gap: 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: #aab3bf; margin-bottom: 8px; }
   .tool-list { display: grid; gap: 6px; }
   .tool {
     display: flex; align-items: center; gap: 8px;
     padding: 6px 8px; font-size: 12px;
-    border: 1px solid #2a2f36; border-radius: 8px;
+    border: 1px solid var(--border); border-radius: 8px;
     background: #0f141b; color: #d7dde6; cursor: pointer;
   }
-  .tool:hover { border-color: #3a414b; background: #131923; }
+  .tool:hover { background:#131923; }
   .muted { color: #9aa3ad; }
   .small { font-size: 12px; }
   .edge-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .edge-pill {
-    display:inline-flex; align-items:center; gap:6px; padding:2px 8px;
-    border:1px solid #2a2f36; border-radius:999px; font-size:12px;
-    background: rgba(255,255,255,0.04);
-  }
-  .pill-x {
-    border:1px solid #3a414b; background:#12161c; border-radius:10px;
-    padding:0 6px; height:18px; line-height:16px; cursor:pointer; font-size:11px; color:#e8e8e8;
-  }
-  .pending { padding:4px 8px; border:1px dashed #3a414b; border-radius:8px; margin-top:8px; }
+  .edge-pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border:1px solid var(--border); border-radius:999px; font-size:12px; background: rgba(255,255,255,0.04); }
+  .pill-x { border:1px solid var(--border); background:#12161c; border-radius:10px; padding:0 6px; height:18px; line-height:16px; cursor:pointer; font-size:11px; color:#e8e8e8; }
+  .pending { padding:4px 8px; border:1px dashed var(--border); border-radius:8px; margin-top:8px; }
 
   .work { min-width: 0; min-height: 0; height: 100%; }
   .split {
-    position: relative;
-    display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); /* canvas + map */
-    gap: 8px;
-    height: 100%;
-    min-height: 0;
-    padding: 8px; box-sizing: border-box; align-items: stretch;
-    overflow: hidden;
+    position: relative; display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+    gap: 8px; height: 100%; min-height: 0; padding: 8px; box-sizing: border-box; align-items: stretch; overflow: hidden;
   }
-
   @media (max-width: 900px) {
     .main { --sidebar-w: 56px; }
-    .split {
-      grid-template-columns: 1fr;
-      grid-template-rows: minmax(0, 55%) minmax(0, 45%);
-    }
+    .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 55%) minmax(0, 45%); }
   }
 
   /* Canvas viewport + map */
-  .right { position: relative; display: flex; min-width: 300px; min-height: 0; height: 100%; overflow: hidden; border: 0; border-radius: 0; background: #0f1216; }
+  .right { position: relative; display: flex; min-width: 300px; min-height: 0; height: 100%; overflow: hidden; background: #0f1216; }
   .map  { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; }
 
   .edges-overlay { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
@@ -783,10 +873,8 @@
   .dot[aria-pressed="true"] { box-shadow: 0 0 0 3px rgba(154,205,255,0.35); }
 
   .node-del {
-    position: absolute; top: -10px; right: -10px;
-    width: 20px; height: 20px; border-radius: 50%;
-    border: 1px solid #666; background: #1b1f24;
-    cursor: pointer; font-size: 12px; line-height: 16px; color: #bbb;
+    position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; border-radius: 50%;
+    border: 1px solid #666; background: #1b1f24; cursor: pointer; font-size: 12px; line-height: 16px; color: #bbb;
   }
   .node-del:hover { background:#222; }
 
@@ -796,48 +884,53 @@
   }
   .node-config select, .node-config .args {
     font-size: 12px; padding: 2px 6px;
-    border: 1px solid #666; border-radius: 6px;
-    background: #1b1f24; color: #e8e8e8;
+    border: 1px solid #666; border-radius: 6px; background: #1b1f24; color: #e8e8e8;
   }
-  .node-config .args { width: 150px; }
-
   .edit-btn, .preview-btn {
     font-size: 12px; padding: 2px 6px; border: 1px solid #777; border-radius: 4px;
     background: #1b1f24; cursor: pointer; color: #e8e8e8;
   }
 
-  /* Modal */
+  /* Modal (form + JSON) */
   .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; }
   .modal {
     position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    background: #1b1f24; border: 1px solid #666; border-radius: 8px; padding: 16px;
-    z-index: 1001; width: 600px; max-width: 90%; max-height: 80%; display: flex; flex-direction: column;
+    background: #0f141b; border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+    z-index: 1001; width: 640px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; color: #e5e7eb;
+    box-shadow: 0 10px 40px rgba(0,0,0,.5);
   }
-  .modal textarea {
-    flex: 1; width: 100%; min-height: 300px; font-family: monospace; font-size: 13px;
-    background: #101418; color: #e8e8e8; border: 1px solid #555; border-radius: 4px; padding: 8px; resize: vertical;
+  .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+  .modal-head h3 { margin:0; font-size:16px; }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .seg button { border:none; background:#111827; color:#cbd5e1; padding:6px 10px; cursor:pointer; }
+  .seg button.seg-active { background:#1a2230; color:#e5e7eb; }
+  .form-grid { display:grid; grid-template-columns: 1fr; gap: 10px; overflow:auto; padding: 6px 2px; }
+  .form-row { display:flex; flex-direction:column; gap:6px; }
+  .form-row label { font-size:12px; color:#cbd5e1; }
+  .form-row input[type="text"], .form-row input[type="number"], .form-row select, .form-row textarea {
+    background:#0b0f14; color:#e5e7eb; border:1px solid var(--border); border-radius:8px; padding:8px;
   }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-  button { cursor: pointer; }
+  .form-row small { color:#9aa3ad; }
+  .switch { display:inline-flex; align-items:center; gap:8px; }
+  .switch input { appearance: none; width:38px; height:20px; background:#222b35; border-radius:999px; position:relative; cursor:pointer; outline:none; }
+  .switch input:checked { background:#375a9e; }
+  .switch input::after { content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#e5e7eb; transition:left .16s; }
+  .switch input:checked::after { left:20px; }
+
+  .json-area { flex:1; min-height: 340px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background:#0b0f14; color:#e5e7eb; border:1px solid var(--border); border-radius:8px; padding:10px; }
+
+  .modal-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
+  .btn { background:#111827; color:#e5e7eb; border:1px solid var(--border); border-radius:10px; padding:8px 12px; cursor:pointer; }
+  .btn:hover { background:#0f172a; }
+  .btn.primary { border-color:#3b82f6; }
 
   /* Logs Drawer */
-  .logs-drawer {
-    position: fixed; left: 0; right: 0; bottom: 0;
-    transform: translateY(100%);
-    transition: transform .18s ease;
-    background: #0d1117; border-top: 1px solid #1a1f27; color: #dbe2ea;
-    z-index: 1002; max-height: 45dvh; display: flex; flex-direction: column;
-  }
+  .logs-drawer { position: fixed; left: 0; right: 0; bottom: 0; transform: translateY(100%); transition: transform .18s ease; background: #0d1117; border-top: 1px solid var(--border); color: #dbe2ea; z-index: 1002; max-height: 45dvh; display: flex; flex-direction: column; }
   .logs-drawer[data-open="true"] { transform: translateY(0); }
-  .logs-header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 10px; background: #0f141b;
-  }
-  .logs-title { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .7px; color: #aab3bf; }
-  .logs-actions { display: inline-flex; gap: 6px; }
-  .logs-body {
-    overflow: auto; padding: 10px; font-size: 13px; line-height: 1.35;
-  }
+  .logs-header { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#0f141b; }
+  .logs-title { display:inline-flex; align-items:center; gap:8px; font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:#aab3bf; }
+  .logs-actions { display:inline-flex; gap:6px; }
+  .logs-body { overflow:auto; padding:10px; font-size:13px; line-height:1.35; }
   .logs-body ul { list-style: none; padding: 0; margin: 0; }
   .logs-body li { padding: 4px 0; border-bottom: 1px dashed #222a33; }
   .logs-body li.ok { color: #d7f5dd; }
