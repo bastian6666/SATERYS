@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saterys"
-version = "0.3.3"  # bump each release
+version = "0.3.4"  # bump each release
 description = "Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS"
 readme = "README.md"
 license = { text = "MIT" }
