@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "saterys"
-version = "0.3.2"  # bump each release
+version = "0.3.3"  # bump each release
 description = "Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS"
 readme = "README.md"
 license = { text = "MIT" }
@@ -20,8 +20,11 @@ dependencies = [
   "uvicorn[standard]>=0.23", # ASGI server
   "pydantic>=2",             # data validation
   "numpy>=1.26",             # wheels available for Python 3.12
-  "rio-tiler>=6",            # raster tiling & preview
+  "rio-tiler>=6",            # raster tiling & preview (optional for this node)
   "rasterio>=1.3",           # geospatial raster I/O
+  "fiona>=1.9",              # vector I/O (GPKG/SHP)
+  "pyproj>=3.6",             # CRS transforms (EPSG:4326 <-> raster CRS)
+  "shapely>=2.0",            # geometry objects for writing features
 ]
 
 classifiers = [
