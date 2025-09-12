@@ -170,6 +170,19 @@ def process_raster(input_raster):
 
 ## 📚 Documentation
 
+### User Guides
+
+- 🚀 [Getting Started](docs/getting-started.md) - Installation and first steps
+- 🎯 [Manual Labeler Guide](docs/manual-labeler.md) - Interactive training sample creation
+- 🧩 [Plugin Development](docs/plugins.md) - Creating custom nodes
+- 📊 [API Reference](docs/api.md) - REST endpoints
+
+### Examples
+
+- 📁 [Basic Examples](examples/01_basic/) - Simple workflows
+- 🛰️ [Geospatial Examples](examples/02_geospatial/) - Earth observation workflows
+- 🎯 [Manual Labeling](examples/03_manual_labeling/) - Training data creation
+
 ### Built-in Nodes
 
 | Node Type | Description | Use Case |
@@ -178,6 +191,7 @@ def process_raster(input_raster):
 | 🌿 **raster.ndvi** | Calculate NDVI | Vegetation analysis |
 | 🌊 **raster.ndwi** | Calculate NDWI | Water body detection |
 | 📊 **raster.pca** | Principal Component Analysis | Dimensionality reduction |
+| 🎯 **manual_labeler** | Interactive training sample manager | Creating ground truth data |
 | ➕ **sum** | Sum numeric values | Basic arithmetic |
 | 👋 **hello** | Hello world example | Testing/demos |
 | 📝 **script** | Custom Python code | Flexible processing |

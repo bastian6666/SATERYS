@@ -319,10 +319,10 @@ Ensure:
 
 Now that you're familiar with SATERYS basics, explore:
 
+- 🎯 [Manual Labeler Guide](manual-labeler.md) - Create training samples interactively
 - 🧩 [Plugin Development Guide](plugins.md) - Create custom processing nodes
 - 📊 [Advanced Examples](../examples/) - Complex geospatial workflows  
 - 🔌 [API Reference](api.md) - REST endpoint documentation
-- 🎨 [UI Customization](customization.md) - Theming and branding
 
 ---
 
