@@ -1,13 +1,30 @@
 # scheduling.py
 from __future__ import annotations
 
+"""
+SATERYS – Pipeline Scheduling
+
+- Persists jobs in SQLite via APScheduler's SQLAlchemyJobStore
+- Executes the active graph in topological order
+- Uses the SAME /run_node HTTP endpoint that the UI uses, so any custom node
+  resolvable by SATERYS (e.g., files under ./nodes) also works when scheduled.
+- Simple in-memory run history with logs for recent runs per job.
+
+Env:
+  SATERYS_API_BASE  (default: http://127.0.0.1:8000)
+    Set this if your API is served on another host/port or under a prefix,
+    e.g. http://127.0.0.1:8000/api
+"""
+
+import os
+import asyncio
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Literal, Callable, Awaitable
 from collections import defaultdict, deque
 from uuid import uuid4
-import asyncio
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -19,7 +36,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 
 # --------------------------------------------------------------------
-# Scheduler (global instance, persisted jobs via SQLite, UTC timezone)
+# Scheduler (global, persisted jobs, UTC)
 # --------------------------------------------------------------------
 jobstores = {"default": SQLAlchemyJobStore(url="sqlite:///./saterys_jobs.sqlite")}
 scheduler = AsyncIOScheduler(jobstores=jobstores, timezone="UTC")
@@ -62,7 +79,7 @@ class ScheduleOut(BaseModel):
 
 
 # --------------------------------------------------------------------
-# Run history (in-memory, simple for dev)
+# Run history (in-memory ring per job)
 # --------------------------------------------------------------------
 class RunStatus(str, Enum):
     running = "running"
@@ -138,24 +155,34 @@ def _toposort(nodes: List[PNode], edges: List[PEdge]) -> List[str]:
     return order
 
 
+# --------------------------------------------------------------------
+# Call the same /run_node endpoint the UI uses (supports custom nodes)
+# --------------------------------------------------------------------
+_API_BASE = os.environ.get("SATERYS_API_BASE", "http://127.0.0.1:8000")
+
 async def _call_run_node(
     node_id: str, node_type: str, args: Dict[str, Any], inputs: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Calls your existing async node runner.
-    Adjust the import below to your project layout.
+    Use internal HTTP to POST /run_node so the exact same resolver is used
+    (including dynamic nodes from ./nodes).
     """
-    try:
-        from saterys.core import run_node as _run  # type: ignore
-    except Exception:
-        try:
-            from .core import run_node as _run  # type: ignore
-        except Exception as e:
+    payload = {
+        "nodeId": node_id,
+        "type": node_type,
+        "args": args or {},
+        "inputs": inputs or {},
+    }
+    async with httpx.AsyncClient(base_url=_API_BASE, timeout=120.0) as client:
+        r = await client.post("/run_node", json=payload)
+        if r.status_code == 404:
             raise RuntimeError(
-                "run_node() not found. Update scheduling.py to import your runner "
-                "(e.g., from saterys.core import run_node)."
-            ) from e
-    return await _run(node_id=node_id, type=node_type, args=args or {}, inputs=inputs or {})
+                "POST /run_node returned 404. If your API is served on another base "
+                "path/port, set SATERYS_API_BASE, e.g. 'http://127.0.0.1:8000' or "
+                "'http://127.0.0.1:8000/api'."
+            )
+        r.raise_for_status()
+        return r.json()
 
 
 async def _run_pipeline_graph(
@@ -185,7 +212,7 @@ async def _run_pipeline_graph(
         try:
             res = await _call_run_node(n.id, n.type, n.args, inputs)
 
-            # attach any logs/stdout if your runner returns them
+            # Attach any logs/stdout if your runner returns them
             if isinstance(res, dict):
                 for line in (res.get("logs") or []):
                     await L(f"[{nid}] {str(line)}")
@@ -266,7 +293,7 @@ def create_pipeline_schedule(s: PipelineScheduleCreate):
         max_instances=1,
         misfire_grace_time=300,
     )
-    # let the job know its own id for run recording
+    # Let the job know its own id for run recording
     job.modify(kwargs={**job.kwargs, "job_id": job.id})
     return ScheduleOut(id=job.id, next_run_time=job.next_run_time)
 
@@ -339,3 +366,8 @@ def get_run(run_id: str):
     if not r:
         raise HTTPException(404, "run not found")
     return r
+
+
+# Back-compat export name if your app used `from .scheduling import router`
+router = pipeline_router
+__all__ = ["scheduler", "pipeline_router", "router"]
