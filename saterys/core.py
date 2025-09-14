@@ -1,32 +1,24 @@
 # saterys/core.py
 from __future__ import annotations
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Callable
 import asyncio
 import io
 import json
 import contextlib
-import importlib, inspect, os, sys
-from importlib.metadata import entry_points
+import importlib
+import os
+import sys
+from pathlib import Path
 
-# ------------------------
-# Helpers: OK / ERR shape
-# ------------------------
+# ---- helpers to shape responses your UI expects ----
 def _ok(output: Any = None, logs: List[str] | None = None, stdout: str | None = None) -> Dict[str, Any]:
     return {"ok": True, "output": output, "logs": logs or [], "stdout": stdout or ""}
 
 def _err(msg: str) -> Dict[str, Any]:
     return {"ok": False, "error": msg, "logs": [], "stdout": ""}
 
-# ------------------------
-# Built-in: script runner
-# ------------------------
+# ---- built-ins (hello / sum / script / raster.input) ----
 async def _run_script(code: str, _args: Dict[str, Any], _inputs: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Executes Python code provided in args['code'].
-    Exposes 'args' and 'inputs' in the script globals.
-    If the script sets a variable named 'result', we return it as output.
-    All prints are captured and returned as stdout.
-    """
     stdout_buf = io.StringIO()
 
     def _exec():
@@ -34,7 +26,6 @@ async def _run_script(code: str, _args: Dict[str, Any], _inputs: Dict[str, Any])
         l: Dict[str, Any] = {}
         with contextlib.redirect_stdout(stdout_buf):
             exec(compile(code, "<node-script>", "exec"), g, l)
-        # prefer explicit 'result' from locals, else from globals
         return l.get("result", g.get("result", None))
 
     try:
@@ -43,112 +34,75 @@ async def _run_script(code: str, _args: Dict[str, Any], _inputs: Dict[str, Any])
     except Exception as e:
         return _err(f"script error: {e!s}")
 
-# -----------------------------------
-# Dynamic loader for external nodes
-# -----------------------------------
-# Optional: allow external plugin dirs; separate using os.pathsep
-#   export SATERYS_NODE_PATH=/abs/path/to/my_nodes:/another/path
-_PLUGIN_DIRS = [p for p in (os.environ.get("SATERYS_NODE_PATH") or "").split(os.pathsep) if p]
+# ---- dynamic node loader (so 'manual_labeler' works) ----
+_ALIASES = {
+    # short name -> real module path
+    "manual_labeler": "saterys.nodes.raster.manual_labeler",
+    # add more aliases here if you like
+}
 
-def _load_node_module(node_type: str):
+def _import_run_callable(type_name: str) -> Optional[Callable[[Dict[str, Any], Dict[str, Any], Dict[str, Any]], Any]]:
     """
-    Resolve a node type string to a Python module exposing `run(args, inputs, context)`.
+    Try to resolve a node's `run(args, inputs, context)` function by type string.
     Resolution order:
-      1) Fully-qualified module path (as-is)
-      2) saterys.nodes.<node_type>
-      3) saterys.nodes.<node_type with '.' replaced by '_'>
-      4) External plugin dirs (SATERYS_NODE_PATH) trying node_type and dot→underscore
-      5) Entry points group 'saterys_nodes' (name == node_type)
+      1) alias mapping (e.g., 'manual_labeler' -> 'saterys.nodes.raster.manual_labeler')
+      2) import as typed:              import <type_name>
+      3) under saterys.nodes.:         import saterys.nodes.<type_name>
+      4) fallback with underscores:    import saterys.nodes.<type_name.replace('.', '_')>
+      5) search SATERYS_NODE_PATH for a module file and load it
     """
-    candidates = [
-        node_type,
-        f"saterys.nodes.{node_type}",
-        f"saterys.nodes.{node_type.replace('.', '_')}",
-    ]
+    candidates: List[str] = []
+    if type_name in _ALIASES:
+        candidates.append(_ALIASES[type_name])
 
-    # 1–3: direct import attempts
+    # typed module (if user supplies a dotted path)
+    candidates.append(type_name)
+
+    # saterys.nodes.<type>
+    candidates.append(f"saterys.nodes.{type_name}")
+
+    # saterys.nodes.<type_with_underscores>
+    if "." in type_name:
+        candidates.append(f"saterys.nodes.{type_name.replace('.', '_')}")
+
+    # try importing module candidates
     for modname in candidates:
         try:
-            return importlib.import_module(modname)
+            mod = importlib.import_module(modname)
+            if hasattr(mod, "run"):
+                return getattr(mod, "run")
         except Exception:
             pass
 
-    # 4: search in plugin dirs
-    for d in _PLUGIN_DIRS:
-        if d and os.path.isdir(d):
-            added = False
-            if d not in sys.path:
-                sys.path.insert(0, d)
-                added = True
-            try:
-                for modname in (node_type, node_type.replace('.', '_')):
-                    try:
-                        return importlib.import_module(modname)
-                    except Exception:
-                        pass
-            finally:
-                if added:
-                    try:
-                        sys.path.remove(d)
-                    except ValueError:
-                        pass
+    # search external node paths (raw files)
+    node_paths = os.environ.get("SATERYS_NODE_PATH", "")
+    if node_paths:
+        for base in node_paths.split(os.pathsep):
+            base_path = Path(base).expanduser()
+            if not base_path.exists():
+                continue
+            # try file like "<base>/<type_name>.py" or respect dotted path
+            rel = Path(*type_name.split("."))  # e.g. "raster/manual_labeler.py"
+            for cand in (base_path / (type_name + ".py"), base_path / rel.with_suffix(".py")):
+                if cand.exists():
+                    spec = importlib.util.spec_from_file_location(f"extnode__{type_name.replace('.','_')}", cand)
+                    if spec and spec.loader:
+                        mod = importlib.util.module_from_spec(spec)
+                        sys.modules[spec.name] = mod
+                        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+                        if hasattr(mod, "run"):
+                            return getattr(mod, "run")
 
-    # 5: pkg entry points
-    try:
-        for ep in entry_points(group="saterys_nodes"):
-            if ep.name == node_type:
-                return ep.load()
-    except Exception:
-        pass
+    return None
 
-    raise KeyError(f"Unknown node type: {node_type!r}")
-
-def _coerce_result(res: Any, stdout_text: str = "") -> Dict[str, Any]:
-    """
-    Normalize various node returns to the UI shape.
-    - If dict with 'ok' provided by the node, pass it through (ensure stdout field).
-    - Else wrap as ok/output.
-    """
-    if isinstance(res, dict) and "ok" in res:
-        if "stdout" not in res:
-            res = {**res, "stdout": stdout_text}
-        return res
-    return _ok(output=res, stdout=stdout_text)
-
-async def _run_dynamic(type: str, args: Dict[str, Any], inputs: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    mod = _load_node_module(type)
-    fn = getattr(mod, "run", None)
-    if not callable(fn):
-        raise RuntimeError(f"Node '{type}' has no callable run(args, inputs, context)")
-
-    stdout_buf = io.StringIO()
-    if inspect.iscoroutinefunction(fn):
-        with contextlib.redirect_stdout(stdout_buf):
-            res = await fn(args or {}, inputs or {}, context)
-        return _coerce_result(res, stdout_buf.getvalue())
-
-    # sync function — run in thread, still capture prints
-    def _call():
-        with contextlib.redirect_stdout(stdout_buf):
-            return fn(args or {}, inputs or {}, context)
-
-    res = await asyncio.to_thread(_call)
-    return _coerce_result(res, stdout_buf.getvalue())
-
-# ------------------------------
-# Central runner (API/Scheduler)
-# ------------------------------
+# ---- central runner used by REST + scheduler ----
 async def run_node(*, node_id: str, type: str, args: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Central runner used by both:
-      - POST /run_node (manual runs)
-      - scheduler (_call_run_node in scheduling.py)
-
     Return shape:
       { ok: bool, output: Any, logs?: [str], stdout?: str, error?: str }
     """
     try:
-        # ---- Built-in nodes ----
+        # built-ins first
         if type == "hello":
             name = str(args.get("name", "world"))
             return _ok({"text": f"Hello {name}"})
@@ -168,19 +122,35 @@ async def run_node(*, node_id: str, type: str, args: Dict[str, Any], inputs: Dic
             return await _run_script(code, args, inputs)
 
         if type == "raster.input":
-            # Minimal output so your map preview can find .type and .path
             path = args.get("path") or ""
             if not isinstance(path, str) or not path:
                 return _err("raster.input requires args.path")
             return _ok({"type": "raster", "path": path})
 
-        # ---- Dynamic / external nodes ----
-        context = {"node_id": node_id, "type": type}
-        return await _run_dynamic(type, args, inputs, context)
+        # dynamic plug-ins (e.g., 'manual_labeler' or 'raster.manual_labeler')
+        run_callable = _import_run_callable(type)
+        if run_callable:
+            # optional: capture prints from plugin run
+            stdout_buf = io.StringIO()
+            def _call():
+                with contextlib.redirect_stdout(stdout_buf):
+                    return run_callable(args, inputs, {"node_id": node_id, "type": type})
+            try:
+                result = await asyncio.to_thread(_call)
+            except Exception as e:
+                return _err(f"runner exception: {e!s}")
 
-    except KeyError as e:
-        # unknown dynamic node
-        return _err(str(e))
+            # if plugin returned a plain value, wrap it; if it returned dict with ok, pass-through
+            if isinstance(result, dict) and ("ok" in result):
+                # ensure stdout surfaced too
+                if stdout_buf.tell():
+                    result = {**result, "stdout": result.get("stdout", "") + stdout_buf.getvalue()}
+                return result
+            else:
+                return _ok(output=result, stdout=stdout_buf.getvalue())
+
+        # Unknown type
+        return _err(f"Unknown node type: {type!r}")
 
     except Exception as e:
         return _err(f"runner exception: {e!s}")
