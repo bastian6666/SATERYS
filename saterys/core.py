@@ -5,14 +5,21 @@ import asyncio
 import io
 import json
 import contextlib
+import importlib, inspect, os, sys
+from importlib.metadata import entry_points
 
-# Shape the response your UI expects
+# ------------------------
+# Helpers: OK / ERR shape
+# ------------------------
 def _ok(output: Any = None, logs: List[str] | None = None, stdout: str | None = None) -> Dict[str, Any]:
     return {"ok": True, "output": output, "logs": logs or [], "stdout": stdout or ""}
 
 def _err(msg: str) -> Dict[str, Any]:
     return {"ok": False, "error": msg, "logs": [], "stdout": ""}
 
+# ------------------------
+# Built-in: script runner
+# ------------------------
 async def _run_script(code: str, _args: Dict[str, Any], _inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executes Python code provided in args['code'].
@@ -36,6 +43,101 @@ async def _run_script(code: str, _args: Dict[str, Any], _inputs: Dict[str, Any])
     except Exception as e:
         return _err(f"script error: {e!s}")
 
+# -----------------------------------
+# Dynamic loader for external nodes
+# -----------------------------------
+# Optional: allow external plugin dirs; separate using os.pathsep
+#   export SATERYS_NODE_PATH=/abs/path/to/my_nodes:/another/path
+_PLUGIN_DIRS = [p for p in (os.environ.get("SATERYS_NODE_PATH") or "").split(os.pathsep) if p]
+
+def _load_node_module(node_type: str):
+    """
+    Resolve a node type string to a Python module exposing `run(args, inputs, context)`.
+    Resolution order:
+      1) Fully-qualified module path (as-is)
+      2) saterys.nodes.<node_type>
+      3) saterys.nodes.<node_type with '.' replaced by '_'>
+      4) External plugin dirs (SATERYS_NODE_PATH) trying node_type and dot→underscore
+      5) Entry points group 'saterys_nodes' (name == node_type)
+    """
+    candidates = [
+        node_type,
+        f"saterys.nodes.{node_type}",
+        f"saterys.nodes.{node_type.replace('.', '_')}",
+    ]
+
+    # 1–3: direct import attempts
+    for modname in candidates:
+        try:
+            return importlib.import_module(modname)
+        except Exception:
+            pass
+
+    # 4: search in plugin dirs
+    for d in _PLUGIN_DIRS:
+        if d and os.path.isdir(d):
+            added = False
+            if d not in sys.path:
+                sys.path.insert(0, d)
+                added = True
+            try:
+                for modname in (node_type, node_type.replace('.', '_')):
+                    try:
+                        return importlib.import_module(modname)
+                    except Exception:
+                        pass
+            finally:
+                if added:
+                    try:
+                        sys.path.remove(d)
+                    except ValueError:
+                        pass
+
+    # 5: pkg entry points
+    try:
+        for ep in entry_points(group="saterys_nodes"):
+            if ep.name == node_type:
+                return ep.load()
+    except Exception:
+        pass
+
+    raise KeyError(f"Unknown node type: {node_type!r}")
+
+def _coerce_result(res: Any, stdout_text: str = "") -> Dict[str, Any]:
+    """
+    Normalize various node returns to the UI shape.
+    - If dict with 'ok' provided by the node, pass it through (ensure stdout field).
+    - Else wrap as ok/output.
+    """
+    if isinstance(res, dict) and "ok" in res:
+        if "stdout" not in res:
+            res = {**res, "stdout": stdout_text}
+        return res
+    return _ok(output=res, stdout=stdout_text)
+
+async def _run_dynamic(type: str, args: Dict[str, Any], inputs: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    mod = _load_node_module(type)
+    fn = getattr(mod, "run", None)
+    if not callable(fn):
+        raise RuntimeError(f"Node '{type}' has no callable run(args, inputs, context)")
+
+    stdout_buf = io.StringIO()
+    if inspect.iscoroutinefunction(fn):
+        with contextlib.redirect_stdout(stdout_buf):
+            res = await fn(args or {}, inputs or {}, context)
+        return _coerce_result(res, stdout_buf.getvalue())
+
+    # sync function — run in thread, still capture prints
+    def _call():
+        with contextlib.redirect_stdout(stdout_buf):
+            return fn(args or {}, inputs or {}, context)
+
+    res = await asyncio.to_thread(_call)
+    return _coerce_result(res, stdout_buf.getvalue())
+
+# ------------------------------
+# Central runner (API/Scheduler)
+# ------------------------------
 async def run_node(*, node_id: str, type: str, args: Dict[str, Any], inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Central runner used by both:
@@ -46,6 +148,7 @@ async def run_node(*, node_id: str, type: str, args: Dict[str, Any], inputs: Dic
       { ok: bool, output: Any, logs?: [str], stdout?: str, error?: str }
     """
     try:
+        # ---- Built-in nodes ----
         if type == "hello":
             name = str(args.get("name", "world"))
             return _ok({"text": f"Hello {name}"})
@@ -71,8 +174,13 @@ async def run_node(*, node_id: str, type: str, args: Dict[str, Any], inputs: Dic
                 return _err("raster.input requires args.path")
             return _ok({"type": "raster", "path": path})
 
-        # Unknown type
-        return _err(f"Unknown node type: {type}")
+        # ---- Dynamic / external nodes ----
+        context = {"node_id": node_id, "type": type}
+        return await _run_dynamic(type, args, inputs, context)
+
+    except KeyError as e:
+        # unknown dynamic node
+        return _err(str(e))
 
     except Exception as e:
         return _err(f"runner exception: {e!s}")
