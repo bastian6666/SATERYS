@@ -1,7 +1,8 @@
 <script lang="ts">
   // @ts-ignore
   import { Svelvet, Node } from 'svelvet';
-  import { onMount, tick } from 'svelte';
+  import { onMount, tick, onDestroy} from 'svelte';
+
 
   // Leaflet
   // @ts-ignore
@@ -492,6 +493,177 @@ function selectOptions(f: Field): string[] {
   return (f as any).options ?? [];
 }
 
+// ===== Server run history / logs (polling) =====
+type RunSummary = {
+  id: string; job_id: string;
+  started_at: string;
+  finished_at?: string | null;
+  status: 'running' | 'success' | 'error';
+};
+type RunDetail = RunSummary & { logs: string[] };
+
+let runPollTimer: any = null;
+
+async function openJobLogs(jobId: string) {
+  showLogs = true;  // open the bottom drawer you already have
+  logs = [];        // clear current UI logs
+  await pollLatestRun(jobId);
+  if (runPollTimer) clearInterval(runPollTimer);
+  runPollTimer = setInterval(() => pollLatestRun(jobId), 1000);
+}
+
+async function pollLatestRun(jobId: string) {
+  try {
+    const list: RunSummary[] = await fetch(`/pipeline/schedules/${jobId}/runs`).then(r => r.json());
+    if (!Array.isArray(list) || list.length === 0) {
+      logs = [{ nodeId: 'system', ok: true, text: '(no runs yet)' }];
+      return;
+    }
+    const latest = list[0]; // newest first
+    const det: RunDetail = await fetch(`/pipeline/schedules/runs/${latest.id}`).then(r => r.json());
+    logs = det.logs.map(line => ({
+      nodeId: det.status === 'running' ? 'run' : (det.status === 'success' ? 'ok' : 'err'),
+      ok: !/❌|exception/i.test(line),
+      text: line
+    }));
+    // stop polling once finished
+    if (det.status !== 'running' && runPollTimer) {
+      clearInterval(runPollTimer);
+      runPollTimer = null;
+    }
+  } catch (e) {
+    logs = [{ nodeId: 'system', ok: false, text: 'Failed to fetch run logs' }];
+  }
+}
+
+// stop polling if the drawer is closed
+$: if (!showLogs && runPollTimer) { clearInterval(runPollTimer); runPollTimer = null; }
+
+// cleanup on hot reload / navigate
+onDestroy(() => { if (runPollTimer) clearInterval(runPollTimer); });
+
+
+// ===== PIPELINE SCHEDULING (entire graph) =====
+type ScheduleMode = 'once' | 'interval' | 'cron';
+type PipeNode = { id: string; type: string; args: any };
+type PipeEdge = { source: string; target: string };
+type PipelineScheduleCreate = {
+  mode: ScheduleMode;
+  run_at?: string;
+  seconds?: number;
+  minutes?: number;
+  hours?: number;
+  cron?: string;
+  graph: { nodes: PipeNode[]; edges: PipeEdge[] };
+};
+type Schedule = { id: string; next_run_time?: string | null };
+
+let showPipelineScheduleModal = false;
+let scheduleMode: ScheduleMode = 'once';
+let scheduleLocalDateTime = '';
+let scheduleHours = 0, scheduleMinutes = 0, scheduleSeconds = 0;
+let scheduleCron = '0 5 * * *';
+let scheduleSubmitting = false;
+let scheduleError = '';
+let schedules: Schedule[] = [];
+
+function toLocal(ts?: string | null) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return d.toLocaleString();
+}
+
+function openPipelineSchedule() {
+  const { activeNodes } = activeGraph();
+  if (activeNodes.length === 0) {
+    alert('No connected nodes to schedule. Connect nodes with edges first.');
+    return;
+  }
+  showPipelineScheduleModal = true;
+  scheduleMode = 'once';
+  scheduleLocalDateTime = '';
+  scheduleHours = scheduleMinutes = scheduleSeconds = 0;
+  scheduleCron = '0 5 * * *';
+  scheduleError = '';
+}
+
+function graphSnapshot() {
+  const { activeNodes, activeEdges } = activeGraph();
+  const nodesOut: PipeNode[] = activeNodes.map(n => ({ id: n.id, type: n.type, args: n.args ?? {} }));
+  const edgesOut: PipeEdge[] = activeEdges.map(e => ({ source: e.source, target: e.target }));
+  return { nodes: nodesOut, edges: edgesOut };
+}
+
+async function createPipelineSchedule() {
+  const g = graphSnapshot();
+  if (g.nodes.length === 0) { scheduleError = 'Nothing to schedule (empty graph).'; return; }
+
+  const payload: PipelineScheduleCreate = { mode: scheduleMode, graph: g };
+
+  if (scheduleMode === 'once') {
+    if (!scheduleLocalDateTime) { scheduleError = 'Please pick a date & time.'; return; }
+    payload.run_at = new Date(scheduleLocalDateTime).toISOString(); // local → UTC
+  } else if (scheduleMode === 'interval') {
+    payload.hours = Number(scheduleHours) || 0;
+    payload.minutes = Number(scheduleMinutes) || 0;
+    payload.seconds = Number(scheduleSeconds) || 0;
+    if (!(payload.hours || payload.minutes || payload.seconds)) {
+      scheduleError = 'Interval must be > 0.'; return;
+    }
+  } else { // cron
+    payload.cron = (scheduleCron || '').trim();
+    if (!payload.cron) { scheduleError = 'Cron expression is required.'; return; }
+  }
+
+  scheduleSubmitting = true; scheduleError = '';
+  try {
+    const res = await fetch('/pipeline/schedules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await res.json();
+    showPipelineScheduleModal = false;
+    await refreshSchedules();
+  } catch (e: any) {
+    scheduleError = `Failed to create schedule: ${e?.message || e}`;
+  } finally {
+    scheduleSubmitting = false;
+  }
+}
+
+async function refreshSchedules() {
+  try {
+    const r = await fetch('/pipeline/schedules');
+    if (r.ok) { schedules = await r.json(); return; }
+  } catch {}
+  // (optional fallback if you keep a generic list endpoint)
+  try {
+    const r2 = await fetch('/schedules');
+    if (r2.ok) schedules = await r2.json();
+  } catch {}
+}
+async function deleteSchedule(jobId: string) {
+  await fetch(`/pipeline/schedules/${jobId}`, { method: 'DELETE' }).catch(()=>{});
+  await refreshSchedules();
+}
+async function pauseSchedule(jobId: string) {
+  await fetch(`/pipeline/schedules/${jobId}/pause`, { method: 'POST' }).catch(()=>{});
+  await refreshSchedules();
+}
+async function resumeSchedule(jobId: string) {
+  await fetch(`/pipeline/schedules/${jobId}/resume`, { method: 'POST' }).catch(()=>{});
+  await refreshSchedules();
+}
+async function runNow(jobId: string) {
+  await fetch(`/pipeline/schedules/${jobId}/run-now`, { method: 'POST' }).catch(()=>{});
+}
+
+// kick once on load
+onMount(async () => { await refreshSchedules().catch(()=>{}); });
+
+
 </script>
 
 <!-- APP ROOT -->
@@ -515,6 +687,12 @@ function selectOptions(f: Field): string[] {
       <button class="icon-btn" title={running ? 'Running…' : 'Run pipeline'} on:click={runPipeline} disabled={running}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
         <span>Run</span>
+      </button>
+      <button class="icon-btn" title="Schedule pipeline" on:click={openPipelineSchedule}>
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <path d="M8 7V4m8 3V4M5 11h14M7 21h10a2 2 0 002-2V8a2 2 0 00-2-2H7a2 2 0 00-2 2v11a2 2 0 002 2zm5-6v-3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+      </svg>
+      <span>Schedule</span>
       </button>
       <button class="icon-btn" title="Toggle logs" on:click={() => showLogs = !showLogs}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 5h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zm2 4l3 3-3 3m5 0h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -588,7 +766,49 @@ function selectOptions(f: Field): string[] {
           </div>
         {/if}
       </div>
+
+      <div class="section">
+  <div class="section-title">
+    <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 6h12v12H6zM9 3h6M3 9h6M15 21h6M3 15h6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+    <span class="txt">Schedules</span>
+    <button class="pill-x" on:click={refreshSchedules} title="Refresh">↻</button>
+  </div>
+
+  {#if schedules.length === 0}
+    <div class="muted small txt">(no scheduled jobs)</div>
+  {:else}
+    <div class="tool-list">
+      {#each schedules as j (j.id)}
+  <div class="tool schedule-card">
+    <div class="schedule-head">
+      <div class="schedule-date">
+        <time datetime={j.next_run_time}>{toLocal(j.next_run_time)}</time>
+      </div>
+    </div>
+
+    <div class="schedule-actions">
+      <!-- Run now + open logs immediately -->
+      <button class="pill-x" title="Run now" on:click={() => { runNow(j.id); openJobLogs(j.id); }}>Run now</button>
+
+      <!-- Pause / Resume -->
+      <button class="pill-x" title="Pause"  on:click={() => pauseSchedule(j.id)}>Pause</button>
+      <button class="pill-x" title="Resume" on:click={() => resumeSchedule(j.id)}>Resume</button>
+
+      <!-- Text-only Logs button -->
+      <button class="pill-x" title="Logs" on:click={() => openJobLogs(j.id)}>Logs</button>
+
+      <!-- Delete -->
+      <button class="pill-x" title="Delete" on:click={() => deleteSchedule(j.id)}>Delete</button>
+    </div>
+  </div>
+{/each}
+    </div>
+  {/if}
+</div>
+
     </aside>
+
+    
 
     <!-- Work area: nodes + map -->
     <div class="work">
@@ -625,6 +845,28 @@ function selectOptions(f: Field): string[] {
 
                   <!-- map preview -->
                   <button class="preview-btn" title="Preview on map" on:click={() => previewNode(n, i)}>👁</button>
+                  <button
+                      class="runone-btn"
+                      title="Run this node only"
+                      on:click={async () => {
+                        try {
+                          // Call the same endpoint used in the pipeline, but only for this node.
+                          const data = await runNode(n, {});   // inputs can be empty for manual_labeler
+                          showLogs = true;                     // open logs drawer
+                          pushLog(n.id, !!data?.ok, data?.ok
+                            ? (data?.output?.message || 'Started')
+                            : (data?.error || 'Error'));
+                        } catch (e) {
+                          pushLog(n.id, false, `Exception: ${
+                            typeof e === 'object' && e !== null && 'message' in e
+                              ? e.message
+                              : String(e)
+                          }`);
+                          showLogs = true;
+                        }
+                      }}>
+                      ▶
+                    </button>
                 </div>
               </div>
             </Node>
@@ -718,6 +960,65 @@ function selectOptions(f: Field): string[] {
       </div>
     </div>
   {/if}
+  {#if showPipelineScheduleModal}
+  <div class="modal-backdrop" on:click={() => showPipelineScheduleModal = false}></div>
+  <div class="modal" on:click|stopPropagation>
+    <div class="modal-head">
+      <h3>Schedule Pipeline (active connected graph)</h3>
+    </div>
+
+    <div class="form-grid">
+      <div class="form-row">
+        <label>Mode</label>
+        <select bind:value={scheduleMode}>
+          <option value="once">Once</option>
+          <option value="interval">Interval</option>
+          <option value="cron">Cron</option>
+        </select>
+      </div>
+
+      {#if scheduleMode === 'once'}
+        <div class="form-row">
+          <label>Date & time (your local)</label>
+          <input type="datetime-local" bind:value={scheduleLocalDateTime} />
+          <small class="muted">Stored & executed in UTC on the server.</small>
+        </div>
+      {:else if scheduleMode === 'interval'}
+        <div class="form-row">
+          <label>Interval</label>
+          <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:8px;">
+            <input type="number" min="0" placeholder="hours" bind:value={scheduleHours}/>
+            <input type="number" min="0" placeholder="minutes" bind:value={scheduleMinutes}/>
+            <input type="number" min="0" placeholder="seconds" bind:value={scheduleSeconds}/>
+          </div>
+          <small class="muted">At least one of hours/minutes/seconds must be &gt; 0.</small>
+        </div>
+      {:else}
+        <div class="form-row">
+          <label>Cron (UTC)</label>
+          <input type="text" bind:value={scheduleCron} placeholder="0 5 * * *" />
+          <small class="muted">Example: <code>0 5 * * *</code> = 05:00 UTC daily</small>
+        </div>
+      {/if}
+
+      {#if scheduleError}
+        <div class="form-row">
+          <div class="muted" style="color:#ffb4b4;">{scheduleError}</div>
+        </div>
+      {/if}
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn" on:click={() => showPipelineScheduleModal = false}>Cancel</button>
+      <button class="btn primary" on:click={createPipelineSchedule} disabled={scheduleSubmitting}>
+        {scheduleSubmitting ? 'Scheduling…' : 'Create schedule'}
+      </button>
+    </div>
+  </div>
+{/if}
+
+
+
 
   <!-- Logs Drawer -->
   <div class="logs-drawer" data-open={showLogs ? 'true' : 'false'}>
@@ -774,6 +1075,14 @@ function selectOptions(f: Field): string[] {
   .app-root { position: fixed; inset: 0; display: flex; flex-direction: column; width: 100vw; height: 100vh; overflow: hidden; }
   @supports (height: 100svh) { .app-root { height: 100svh; } }
 
+    .schedule-card { display:flex; flex-direction:column; gap:8px; }
+    .schedule-head { display:flex; align-items:center; justify-content:space-between; }
+    .schedule-date { font-weight:600; }
+    .schedule-actions { display:flex; flex-wrap:wrap; gap:6px; }
+    .schedule-actions .pill-x { min-width:74px; }
+
+
+
   /* ======= Header (glassy topbar) ======= */
   .topbar {
     display:flex; align-items:center; justify-content:space-between;
@@ -796,6 +1105,18 @@ function selectOptions(f: Field): string[] {
   .icon-btn:disabled { opacity:.6; cursor: default; }
   .icon-btn.primary { border-color:#3b82f6; }
   .icon-btn.ghost { background:transparent; border-color:var(--border); }
+
+
+  .runone-btn {
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid #777;
+  border-radius: 4px;
+  background: #1b1f24;
+  cursor: pointer;
+  color: #e8e8e8;
+}
+
 
   /* ======= Main frame: sidebar + work ======= */
   .main {

@@ -1,3 +1,4 @@
+# nodes/raster_manual_labeler.py
 """
 SATERYS node: raster.manual_labeler
 Refined UI + instant server binding + UI class manager (ID/name/color with ID change)
@@ -52,6 +53,13 @@ DEFAULT_ARGS = {
     "open_browser": True,
     "port_autoselect": True,
     "max_port_scans": 10,
+    "allow_empty_input": True,     # <— NEW: allow starting without upstream raster
+    "autogrid": {                  # <— NEW: used only when no input_path is given
+        "epsg": 3857,              # grid in Web Mercator
+        "pixel_size_deg": 0.001,   # ~111 m at equator (adjust as you like)
+        "bounds": [-180, -90, 180, 90]  # [west, south, east, north]
+    },
+    
 }
 
 # ---------------- Implementation ----------------
@@ -150,39 +158,110 @@ def _save_classes(args, classes):
 
 # ---------- raster ops ----------
 
-def _ensure_class_raster(base_path, class_path):
+def _ensure_class_raster(base_path, class_path, autogrid=None):
     import rasterio
     import numpy as np
+    from rasterio.crs import CRS
+    from rasterio.transform import from_origin
+
     if os.path.exists(class_path):
         return
-    with rasterio.open(base_path) as src:
-        profile = src.profile.copy()
-        profile.update(driver="GTiff", count=1, dtype="uint8", nodata=0)
-        os.makedirs(os.path.dirname(class_path), exist_ok=True)
-        arr = np.zeros((src.height, src.width), dtype="uint8")
-        with rasterio.open(class_path, "w", **profile) as dst:
-            dst.write(arr, 1)
-            try:
-                from rasterio.enums import Resampling
-                dst.build_overviews([2,4,8,16,32], Resampling.nearest)
-            except Exception:
-                pass
 
-def _rc_from_lonlat(input_path, lon, lat):
+    os.makedirs(os.path.dirname(class_path) or ".", exist_ok=True)
+
+    # If a base raster exists, copy its georeferencing
+    if base_path and os.path.exists(base_path):
+        with rasterio.open(base_path) as src:
+            profile = src.profile.copy()
+            profile.update(driver="GTiff", count=1, dtype="uint8", nodata=0)
+            arr = np.zeros((src.height, src.width), dtype="uint8")
+            with rasterio.open(class_path, "w", **profile) as dst:
+                dst.write(arr, 1)
+                try:
+                    from rasterio.enums import Resampling
+                    dst.build_overviews([2,4,8,16,32], Resampling.nearest)
+                except Exception:
+                    pass
+        return
+
+    # --- No base raster: build an autogrid class raster ---
+    ag = autogrid or {}
+    epsg = int(ag.get("epsg", 3857))
+
+    if epsg == 3857:
+        west, south, east, north = ag.get(
+            "bounds_mercator",
+            [-20037508.342789244, -20037508.342789244,
+              20037508.342789244,  20037508.342789244]
+        )
+        pix = float(ag.get("pixel_size_m", 10.0))  # meters/pixel
+        width  = max(1, int(round((east  - west)  / pix)))
+        height = max(1, int(round((north - south) / pix)))
+        transform = from_origin(west, north, pix, pix)
+        profile = {
+            "driver": "GTiff",
+            "count": 1,
+            "dtype": "uint8",
+            "nodata": 0,
+            "width": width,
+            "height": height,
+            "crs": CRS.from_epsg(3857),
+            "transform": transform,
+        }
+
+    elif epsg == 4326:
+        # fallback: degree grid
+        west, south, east, north = ag.get("bounds", [-180, -90, 180, 90])
+        pix = float(ag.get("pixel_size_deg", 0.001))
+        width  = max(1, int(round((east  - west)  / pix)))
+        height = max(1, int(round((north - south) / pix)))
+        transform = from_origin(west, north, pix, pix)
+        profile = {
+            "driver": "GTiff",
+            "count": 1,
+            "dtype": "uint8",
+            "nodata": 0,
+            "width": width,
+            "height": height,
+            "crs": CRS.from_epsg(4326),
+            "transform": transform,
+        }
+
+    else:
+        raise ValueError(f"autogrid EPSG {epsg} not supported in this helper.")
+
+    arr = np.zeros((profile["height"], profile["width"]), dtype="uint8")
+    with rasterio.open(class_path, "w", **profile) as dst:
+        dst.write(arr, 1)
+        try:
+            from rasterio.enums import Resampling
+            dst.build_overviews([2,4,8,16,32], Resampling.nearest)
+        except Exception:
+            pass
+
+
+
+def _rc_from_lonlat(input_path, class_raster_path, lon, lat):
     import rasterio
     from pyproj import Transformer
-    with rasterio.open(input_path) as ref:
+
+    # Use base if present, otherwise the class raster (e.g., the 3857 autogrid)
+    ref_path = input_path if (input_path and os.path.exists(input_path)) else class_raster_path
+    with rasterio.open(ref_path) as ref:
         crs = ref.crs
         H, W = ref.height, ref.width
         transform = ref.transform
+
+    # Project lon/lat -> ref CRS, then map to pixel row/col
     x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon, lat)
     row, col = rasterio.transform.rowcol(transform, x, y)
     return row, col, H, W, transform
 
+
+
 def _paint_pixels(input_path, class_raster_path, lon, lat, cls, brush):
-    import rasterio
-    import numpy as np
-    row, col, H, W, _ = _rc_from_lonlat(input_path, lon, lat)
+    import rasterio, numpy as np
+    row, col, H, W, _ = _rc_from_lonlat(input_path, class_raster_path, lon, lat)
     if row < 0 or col < 0 or row >= H or col >= W:
         return {"painted": 0, "reason": "outside raster"}
     half = max(0, int(brush)//2)
@@ -197,10 +276,8 @@ def _paint_pixels(input_path, class_raster_path, lon, lat, cls, brush):
     return {"painted": int((r1-r0)*(c1-c0))}
 
 def _unpaint_pixels(input_path, class_raster_path, lon, lat, brush):
-    # best-effort "erase": set to 0 in the same brush window
-    import rasterio
-    import numpy as np
-    row, col, H, W, _ = _rc_from_lonlat(input_path, lon, lat)
+    import rasterio, numpy as np
+    row, col, H, W, _ = _rc_from_lonlat(input_path, class_raster_path, lon, lat)
     if row < 0 or col < 0 or row >= H or col >= W:
         return 0
     half = max(0, int(brush)//2)
@@ -924,29 +1001,33 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
 # ---------- node entry ----------
 
 def run(args, inputs, context):
-    # Deps: fastapi uvicorn rasterio pyproj shapely fiona
-    input_path = args.get("input_path") or ""
-    if not input_path:
-        if isinstance(inputs, dict):
-            for v in inputs.values():
-                if isinstance(v, dict) and v.get("type")=="raster" and "path" in v:
-                    input_path = v["path"]; break
-                if isinstance(v, list):
-                    for it in v:
-                        if isinstance(it, dict) and it.get("type")=="raster" and "path" in it:
-                            input_path = it["path"]; break
-    if not input_path:
-        raise ValueError("manual_labeler: set 'input_path' or connect a raster upstream.")
+    input_path = (args.get("input_path") or "").strip()
+
+    if not input_path and isinstance(inputs, dict):
+        for v in inputs.values():
+            if isinstance(v, dict) and v.get("type") == "raster" and "path" in v:
+                input_path = v["path"]; break
+            if isinstance(v, list):
+                for it in v:
+                    if isinstance(it, dict) and it.get("type") == "raster" and "path" in it:
+                        input_path = it["path"]; break
+                if input_path:
+                    break
+
+    if not input_path and not bool(args.get("allow_empty_input", True)):
+        raise ValueError("manual_labeler: set 'input_path' or connect a raster upstream, or set allow_empty_input=True.")
 
     class_raster_path = args.get("class_raster_path") or "./results/labels.tif"
-    _ensure_class_raster(input_path, class_raster_path)
+    _ensure_class_raster(input_path if input_path else None, class_raster_path, autogrid=args.get("autogrid"))
 
+    # Use whichever exists (base or autogrid) to derive CRS for the UI
+    ref_path = input_path if (input_path and os.path.exists(input_path)) else class_raster_path
     import rasterio
-    with rasterio.open(input_path) as src:
-        crs_wkt = src.crs.to_string() if src.crs else "EPSG:4326"
+    with rasterio.open(ref_path) as src:
+        crs_wkt = src.crs.to_string() if src.crs else "EPSG:3857"
 
     if not _STATE["server_running"]:
-        _start_server(args, input_path, class_raster_path, crs_wkt)
+        _start_server(args, ref_path, class_raster_path, crs_wkt)
 
     url = _STATE.get("labeler_url", f"http://{args.get('host','127.0.0.1')}:{args.get('port',8090)}/labeler")
     return [

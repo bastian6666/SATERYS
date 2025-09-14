@@ -9,11 +9,15 @@ from typing import Any, Dict  # IMPORTANT: Dict[...] for Py3.7
 import importlib.util
 import os
 import sys
+from .scheduling import pipeline_router, scheduler
 
 # ------------------------------------------------------------------------------
 # FastAPI app + CORS
 # ------------------------------------------------------------------------------
 app = FastAPI()
+
+# Register the pipeline scheduling API
+app.include_router(pipeline_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -223,3 +227,13 @@ def root():
         raise HTTPException(404, "Frontend not built. Run: (cd saterys/web && npm install && npm run build)")
     return FileResponse(index_path)
 
+# Start/stop the APScheduler with the app lifecycle
+@app.on_event("startup")
+async def _start_scheduler():
+    if not scheduler.running:
+        scheduler.start()
+
+@app.on_event("shutdown")
+async def _stop_scheduler():
+    if scheduler.running:
+        scheduler.shutdown(wait=False)

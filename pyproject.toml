@@ -25,6 +25,10 @@ dependencies = [
   "fiona>=1.9",              # vector I/O (GPKG/SHP)
   "pyproj>=3.6",             # CRS transforms (EPSG:4326 <-> raster CRS)
   "shapely>=2.0",            # geometry objects for writing features
+  "APScheduler>=3.10.4",   # scheduling engine
+  "SQLAlchemy>=2.0",       # job store backend (SQLite via sqlalchemy)
+  "pytz>=2024.1",          # timezones used by APScheduler
+  "tzlocal>=5.2",          # local TZ detection (APScheduler dependency, but list explicitly)
 ]
 
 classifiers = [
@@ -40,7 +44,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bastian6666/saterys"
+Homepage = "https://saterys.com"
 Repository = "https://github.com/bastian6666/saterys"
 Issues = "https://github.com/bastian6666/saterys/issues"
 
