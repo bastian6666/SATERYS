@@ -405,12 +405,19 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
-- [Svelte](https://svelte.dev/) - Cybernetically enhanced web apps  
-- [Svelvet](https://svelvet.io/) - Interactive node-based UI
-- [rio-tiler](https://github.com/cogeotiff/rio-tiler) - Raster tiling library
-- [Rasterio](https://rasterio.readthedocs.io/) - Geospatial raster I/O
-- [Leaflet](https://leafletjs.com/) - Mobile-friendly interactive maps
+- **[FastAPI](https://fastapi.tiangolo.com/)**: For building modern, high-performance APIs with ease.
+- **[Uvicorn](https://www.uvicorn.org/)**: An ASGI server for lightning-fast application deployment.
+- **[Pydantic](https://docs.pydantic.dev/)**: Ensuring data validation and management is smooth and reliable.
+- **[NumPy](https://numpy.org/)**: The foundation for numerical computing in Python.
+- **[rio-tiler](https://github.com/cogeotiff/rio-tiler)**: Efficient raster tiling and preview generation.
+- **[Rasterio](https://rasterio.readthedocs.io/)**: Simplifying geospatial raster data I/O.
+- **[Fiona](https://fiona.readthedocs.io/)**: A powerful library for vector data handling (GPKG/SHP).
+- **[PyProj](https://pyproj4.github.io/pyproj/)**: For seamless coordinate reference system transformations.
+- **[Shapely](https://shapely.readthedocs.io/)**: Geometry manipulation made easy.
+- **[APScheduler](https://apscheduler.readthedocs.io/)**: A flexible scheduling library for background jobs.
+- **[SQLAlchemy](https://www.sqlalchemy.org/)**: The go-to library for database interaction and ORM functionality.
+- **[pytz](https://pytz.sourceforge.net/)**: Comprehensive timezone support.
+- **[tzlocal](https://github.com/regebro/tzlocal)**: Simplifies local timezone detection.
 
 ---
 
