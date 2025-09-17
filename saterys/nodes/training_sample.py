@@ -1,41 +1,39 @@
 # nodes/raster_manual_labeler.py
 """
-SATERYS node: raster.manual_labeler
+SATERYS node: raster.manual_labeler  (points-only)
 Refined UI + instant server binding + UI class manager (ID/name/color with ID change)
 + Attribute Table (search/sort/pan/edit/delete/CSV)
 
-- Manual pixel labeling with imagery basemap and professional toolbar.
-- Add/edit/remove classes from UI. Editing a class can also change its ID:
-  The backend will recode the entire class raster (old_id -> new_id) and update all points.
-- Attribute Table: search, sort, pan-to, edit class per row, delete (optional unpaint), CSV export.
+This version has **no raster dependencies**:
+- No .tif creation or reading
+- No upstream raster required
+- Labels are stored as POINTS with class_id/class_name (GPKG or Shapefile)
+- CSV export available
 
 Endpoints:
   GET  /labeler                         -> Leaflet UI
   GET  /labeler/points                  -> GeoJSON of labeled points (EPSG:4326) + pid
   GET  /labeler/points_table            -> rows [{id, lon, lat, class_id, class_name}]
   GET  /labeler/points.csv              -> CSV of current rows
-  POST /labeler/click                   -> add/paint at lon/lat with class
+  POST /labeler/click                   -> add a labeled point at lon/lat
   POST /labeler/save                    -> write points to Shapefile/GPKG (class_id, class_name)
-  POST /labeler/undo                    -> undo last N paints
+  POST /labeler/undo                    -> undo last N added points
   GET  /labeler/classes                 -> list classes
   POST /labeler/classes/add             -> add class {name, id?, color?}
   POST /labeler/classes/update          -> update class {id, name?, color?, new_id?}
   POST /labeler/classes/remove          -> remove class {id}
   POST /labeler/points/update           -> update row {id, class_id}
-  POST /labeler/points/delete           -> delete rows {ids:[...], unpaint:bool}
+  POST /labeler/points/delete           -> delete rows {ids:[...]}
 
 Dependencies:
-  pip install fastapi uvicorn rasterio pyproj shapely fiona
+  pip install fastapi uvicorn shapely fiona
 """
 
-NAME = "manual_labeler"
+NAME = "Training Sample"
 
 DEFAULT_ARGS = {
-    "input_path": "",                                # your raster to label against
-    "class_raster_path": "./results/labels.tif",     # uint8 class raster (0 = unlabeled)
+    # No input_path, no class_raster_path — points-only workflow
     "points_path": "./results/labels_points.gpkg",   # output vector (GPKG recommended)
-
-    # Initial classes; 0 reserved for unlabeled
     "classes": [
         {"id": 1, "name": "Class 1", "color": "#EF4444"},
         {"id": 2, "name": "Class 2", "color": "#22C55E"},
@@ -44,8 +42,8 @@ DEFAULT_ARGS = {
     "classes_path": "./results/labels_classes.json",
     "persist_classes": True,
 
-    "brush_size_px": 1,
-    "raster_tile_url_template": "",   # optional base raster tiles under the clicks
+    # Optional tile overlay just for visual context (no data coupling)
+    "raster_tile_url_template": "",
 
     # Server
     "host": "127.0.0.1",
@@ -53,13 +51,6 @@ DEFAULT_ARGS = {
     "open_browser": True,
     "port_autoselect": True,
     "max_port_scans": 10,
-    "allow_empty_input": True,     # <— NEW: allow starting without upstream raster
-    "autogrid": {                  # <— NEW: used only when no input_path is given
-        "epsg": 3857,              # grid in Web Mercator
-        "pixel_size_deg": 0.001,   # ~111 m at equator (adjust as you like)
-        "bounds": [-180, -90, 180, 90]  # [west, south, east, north]
-    },
-    
 }
 
 # ---------------- Implementation ----------------
@@ -71,7 +62,7 @@ import threading
 _STATE = {
     "points": [],          # list of dicts: {"id":pid, "lon":..., "lat":..., "class": int}
     "next_pid": 1,
-    "history": [],         # paint ops for undo (window + prev array)
+    "history": [],         # stack of point ids for undo
     "server_running": False,
     "labeler_url": None,
     "host": None,
@@ -151,176 +142,13 @@ def _save_classes(args, classes):
     path = args.get("classes_path") or ""
     if not path:
         return
-    os.makedirs(os.path.dirname(path), exist_ok=True
-    )
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(_validate_classes(classes), f, ensure_ascii=False, indent=2)
 
-# ---------- raster ops ----------
+# ---------- points I/O ----------
 
-def _ensure_class_raster(base_path, class_path, autogrid=None):
-    import rasterio
-    import numpy as np
-    from rasterio.crs import CRS
-    from rasterio.transform import from_origin
-
-    if os.path.exists(class_path):
-        return
-
-    os.makedirs(os.path.dirname(class_path) or ".", exist_ok=True)
-
-    # If a base raster exists, copy its georeferencing
-    if base_path and os.path.exists(base_path):
-        with rasterio.open(base_path) as src:
-            profile = src.profile.copy()
-            profile.update(driver="GTiff", count=1, dtype="uint8", nodata=0)
-            arr = np.zeros((src.height, src.width), dtype="uint8")
-            with rasterio.open(class_path, "w", **profile) as dst:
-                dst.write(arr, 1)
-                try:
-                    from rasterio.enums import Resampling
-                    dst.build_overviews([2,4,8,16,32], Resampling.nearest)
-                except Exception:
-                    pass
-        return
-
-    # --- No base raster: build an autogrid class raster ---
-    ag = autogrid or {}
-    epsg = int(ag.get("epsg", 3857))
-
-    if epsg == 3857:
-        west, south, east, north = ag.get(
-            "bounds_mercator",
-            [-20037508.342789244, -20037508.342789244,
-              20037508.342789244,  20037508.342789244]
-        )
-        pix = float(ag.get("pixel_size_m", 10.0))  # meters/pixel
-        width  = max(1, int(round((east  - west)  / pix)))
-        height = max(1, int(round((north - south) / pix)))
-        transform = from_origin(west, north, pix, pix)
-        profile = {
-            "driver": "GTiff",
-            "count": 1,
-            "dtype": "uint8",
-            "nodata": 0,
-            "width": width,
-            "height": height,
-            "crs": CRS.from_epsg(3857),
-            "transform": transform,
-        }
-
-    elif epsg == 4326:
-        # fallback: degree grid
-        west, south, east, north = ag.get("bounds", [-180, -90, 180, 90])
-        pix = float(ag.get("pixel_size_deg", 0.001))
-        width  = max(1, int(round((east  - west)  / pix)))
-        height = max(1, int(round((north - south) / pix)))
-        transform = from_origin(west, north, pix, pix)
-        profile = {
-            "driver": "GTiff",
-            "count": 1,
-            "dtype": "uint8",
-            "nodata": 0,
-            "width": width,
-            "height": height,
-            "crs": CRS.from_epsg(4326),
-            "transform": transform,
-        }
-
-    else:
-        raise ValueError(f"autogrid EPSG {epsg} not supported in this helper.")
-
-    arr = np.zeros((profile["height"], profile["width"]), dtype="uint8")
-    with rasterio.open(class_path, "w", **profile) as dst:
-        dst.write(arr, 1)
-        try:
-            from rasterio.enums import Resampling
-            dst.build_overviews([2,4,8,16,32], Resampling.nearest)
-        except Exception:
-            pass
-
-
-
-def _rc_from_lonlat(input_path, class_raster_path, lon, lat):
-    import rasterio
-    from pyproj import Transformer
-
-    # Use base if present, otherwise the class raster (e.g., the 3857 autogrid)
-    ref_path = input_path if (input_path and os.path.exists(input_path)) else class_raster_path
-    with rasterio.open(ref_path) as ref:
-        crs = ref.crs
-        H, W = ref.height, ref.width
-        transform = ref.transform
-
-    # Project lon/lat -> ref CRS, then map to pixel row/col
-    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon, lat)
-    row, col = rasterio.transform.rowcol(transform, x, y)
-    return row, col, H, W, transform
-
-
-
-def _paint_pixels(input_path, class_raster_path, lon, lat, cls, brush):
-    import rasterio, numpy as np
-    row, col, H, W, _ = _rc_from_lonlat(input_path, class_raster_path, lon, lat)
-    if row < 0 or col < 0 or row >= H or col >= W:
-        return {"painted": 0, "reason": "outside raster"}
-    half = max(0, int(brush)//2)
-    r0, r1 = max(0, row - half), min(H, row + half + 1)
-    c0, c1 = max(0, col - half), min(W, col + half + 1)
-    with rasterio.open(class_raster_path, "r+") as dst:
-        prev = dst.read(1, window=((r0, r1), (c0, c1))).copy()
-        new = prev.copy()
-        new[:, :] = np.uint8(cls)
-        dst.write(new, 1, window=((r0, r1), (c0, c1)))
-    _STATE["history"].append({"window": (r0, r1, c0, c1), "prev": prev})
-    return {"painted": int((r1-r0)*(c1-c0))}
-
-def _unpaint_pixels(input_path, class_raster_path, lon, lat, brush):
-    import rasterio, numpy as np
-    row, col, H, W, _ = _rc_from_lonlat(input_path, class_raster_path, lon, lat)
-    if row < 0 or col < 0 or row >= H or col >= W:
-        return 0
-    half = max(0, int(brush)//2)
-    r0, r1 = max(0, row - half), min(H, row + half + 1)
-    c0, c1 = max(0, col - half), min(W, col + half + 1)
-    with rasterio.open(class_raster_path, "r+") as dst:
-        prev = dst.read(1, window=((r0, r1), (c0, c1))).copy()
-        new = prev.copy()
-        new[:, :] = np.uint8(0)
-        dst.write(new, 1, window=((r0, r1), (c0, c1)))
-    _STATE["history"].append({"window": (r0, r1, c0, c1), "prev": prev})
-    return int((r1-r0)*(c1-c0))
-
-def _undo(class_raster_path, n=1):
-    import rasterio
-    undone = 0
-    with rasterio.open(class_raster_path, "r+") as dst:
-        while n > 0 and _STATE["history"]:
-            op = _STATE["history"].pop()
-            r0, r1, c0, c1 = op["window"]
-            dst.write(op["prev"], 1, window=((r0, r1), (c0, c1)))
-            undone += 1
-            n -= 1
-    return undone
-
-def _recode_raster_values(class_raster_path, old_id, new_id):
-    """Replace all pixel values == old_id with new_id in the class raster."""
-    import rasterio
-    import numpy as np
-    if old_id == new_id:
-        return 0
-    changed_blocks = 0
-    with rasterio.open(class_raster_path, "r+") as ds:
-        for _, window in ds.block_windows(1):
-            arr = ds.read(1, window=window)
-            m = arr == np.uint8(old_id)
-            if m.any():
-                arr[m] = np.uint8(new_id)
-                ds.write(arr, 1, window=window)
-                changed_blocks += 1
-    return changed_blocks
-
-def _write_points(points_path, crs_wkt, points, classes):
+def _write_points(points_path, points, classes):
     import fiona
     from shapely.geometry import Point, mapping
     name_map = {int(c["id"]): str(c.get("name","")) for c in (classes or [])}
@@ -330,7 +158,8 @@ def _write_points(points_path, crs_wkt, points, classes):
     if os.path.exists(points_path):
         try: os.remove(points_path)
         except Exception: pass
-    with fiona.open(points_path, "w", driver=driver, schema=schema, crs=crs_wkt, encoding="utf-8") as dst:
+    # CRS is WGS84 since UI works in lon/lat
+    with fiona.open(points_path, "w", driver=driver, schema=schema, crs="EPSG:4326", encoding="utf-8") as dst:
         for p in points:
             cid = int(p["class"])
             cname = name_map.get(cid, "")
@@ -362,15 +191,14 @@ def _csv_text(points, classes):
 
 # ---------- server ----------
 
-def _start_server(args, input_path, class_raster_path, crs_wkt):
+def _start_server(args):
     from fastapi import FastAPI, Request
     from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
     import uvicorn, webbrowser
 
-    app = FastAPI(title="SATERYS Manual Labeler")
+    app = FastAPI(title="SATERYS Training Sample Manager (points-only)")
 
     _STATE["classes"] = _load_classes(args)
-    BRUSH = int(args.get("brush_size_px", 1))
     TILE_TEMPLATE = args.get("raster_tile_url_template") or ""
 
     host = args.get("host", "127.0.0.1")
@@ -412,8 +240,6 @@ def _start_server(args, input_path, class_raster_path, crs_wkt):
   .btn { background:#111827; color:#e5e7eb; border:1px solid var(--border); border-radius:10px; padding:8px 12px; cursor:pointer; }
   .btn:hover { background:#0f172a; }
   .btn.primary { border-color:#3b82f6; }
-  .slider { appearance:none; height:6px; border-radius:999px; background:#1f2937; outline:none; width:150px; }
-  .slider::-webkit-slider-thumb { appearance:none; width:16px; height:16px; border-radius:999px; background:#93c5fd; border:1px solid #1f2937; }
   .legend { position:absolute; top:66px; left:12px; background:rgba(16,20,24,.92); border:1px solid var(--border); border-radius:12px; padding:10px 12px; z-index:900; box-shadow: 0 8px 24px rgba(0,0,0,0.25); }
   .legend h4 { margin:4px 0 8px; color:#cbd5e1; font-size:13px; font-weight:600; }
   .legend .item { display:flex; align-items:center; gap:8px; margin:6px 0; color:#d1d5db; }
@@ -465,12 +291,6 @@ def _start_server(args, input_path, class_raster_path, crs_wkt):
   <button id="addClass" class="btn">+ Class</button>
   <div class="sep"></div>
   <div class="ctl">
-    <span>Brush</span>
-    <input id="brush" class="slider" type="range" min="1" max="31" step="2" value="{BRUSH}"/>
-    <span id="brushv" class="kbd">{BRUSH}px</span>
-  </div>
-  <div class="sep"></div>
-  <div class="ctl">
     <button id="toggleLabel" class="btn">✎ Label: Off</button>
     <button id="undo" class="btn">↶ Undo <span class="kbd">Z</span></button>
     <button id="save" class="btn primary">💾 Save <span class="kbd">S</span></button>
@@ -478,7 +298,7 @@ def _start_server(args, input_path, class_raster_path, crs_wkt):
 </div>
 
 <div class="legend" id="legend"><h4>Classes</h4><div id="legendItems"></div></div>
-<div class="status" id="status">Class: none • Brush: {BRUSH}px • Lat: — Lon: — • Keys: <span class="kbd">L</span> toggle, <span class="kbd">0–9</span> class, <span class="kbd">[ / ]</span> brush, <span class="kbd">Z</span> undo, <span class="kbd">S</span> save</div>
+<div class="status" id="status">Class: none • Lat: — Lon: — • Keys: <span class="kbd">L</span> toggle, <span class="kbd">0–9</span> class, <span class="kbd">Z</span> undo, <span class="kbd">S</span> save</div>
 
 <!-- Attribute Table Panel -->
 <div class="table-panel">
@@ -487,7 +307,6 @@ def _start_server(args, input_path, class_raster_path, crs_wkt):
     <input id="search" type="text" placeholder="Search id / class / name / lon / lat"/>
     <div class="small" id="rowcount">0 rows</div>
     <div class="actions">
-      <label class="small"><input id="unpaintChk" type="checkbox" class="chk"/> Unpaint on delete</label>
       <button id="delSel" class="btn">🗑 Delete</button>
       <button id="csvBtn" class="btn">⬇ CSV</button>
     </div>
@@ -530,9 +349,8 @@ let CLASSES = {CLASSES_JSON};
 const CLASS_COLORS = () => Object.fromEntries(CLASSES.map(c => [String(c.id), c.color || '#ffffff']));
 let labeling = false;
 let currentClass = (CLASSES[0] && CLASSES[0].id) || null;
-let brush = {BRUSH};
 
-// Map + basemaps
+// Map + basemaps (optional raster overlay purely for context)
 const imagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution:'&copy; Esri'});
 const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19, attribution:'&copy; OpenStreetMap'});
 const map = L.map('map', { zoomControl: true, layers: [imagery] }).setView([0,0], 2);
@@ -548,8 +366,6 @@ L.control.scale({imperial:false}).addTo(map);
 const palette = document.getElementById('palette');
 const legendItems = document.getElementById('legendItems');
 const statusEl = document.getElementById('status');
-const brushEl = document.getElementById('brush');
-const brushvEl = document.getElementById('brushv');
 const toggleEl = document.getElementById('toggleLabel');
 const undoEl = document.getElementById('undo');
 const saveEl = document.getElementById('save');
@@ -569,7 +385,6 @@ const rowcount = document.getElementById('rowcount');
 const selAll = document.getElementById('selAll');
 const delSel = document.getElementById('delSel');
 const csvBtn = document.getElementById('csvBtn');
-const unpaintChk = document.getElementById('unpaintChk');
 
 let ROWS = [];
 let sortKey = 'id';
@@ -613,7 +428,6 @@ async function fetchClasses() {
 
 function syncUI() {
   [...palette.children].forEach(ch => ch.classList.toggle('active', String(ch.dataset.id) === String(currentClass)));
-  brushvEl.textContent = `${brush}px`;
   toggleEl.textContent = labeling ? '✎ Label: On' : '✎ Label: Off';
   document.getElementById('map').classList.toggle('crosshair', labeling);
   setStatus();
@@ -621,12 +435,11 @@ function syncUI() {
 
 function setStatus(lat=null, lon=null) {
   const latlon = (lat!==null && lon!==null) ? `Lat: ${lat.toFixed(5)} Lon: ${lon.toFixed(5)}` : 'Lat: — Lon: —';
-  statusEl.innerHTML = `Class: ${currentClass ?? 'none'} • Brush: ${brush}px • ${latlon} • Keys: <span class="kbd">L</span> toggle, <span class="kbd">0–9</span> class, <span class="kbd">[ / ]</span> brush, <span class="kbd">Z</span> undo, <span class="kbd">S</span> save`;
+  statusEl.innerHTML = `Class: ${currentClass ?? 'none'} • ${latlon} • Keys: <span class="kbd">L</span> toggle, <span class="kbd">0–9</span> class, <span class="kbd">Z</span> undo, <span class="kbd">S</span> save`;
 }
 
-brushEl.addEventListener('input', e => { brush = parseInt(e.target.value,10) || 1; syncUI(); });
 toggleEl.addEventListener('click', () => { labeling = !labeling; syncUI(); });
-undoEl.addEventListener('click', async () => { await fetch('/labeler/undo', {method:'POST'}); refreshPoints(); refreshTable(); });
+undoEl.addEventListener('click', async () => { await fetch('/labeler/undo', {method:'POST'}); refreshTable(); refreshPoints(); });
 saveEl.addEventListener('click', async () => {
   const j = await fetch('/labeler/save', {method:'POST'}).then(r=>r.json());
   alert(`Saved ${j.written} points to ${j.path}`);
@@ -646,8 +459,6 @@ map.on('click', async (e) => {
 window.addEventListener('keydown', async (ev) => {
   if (ev.key === 'l' || ev.key === 'L') { labeling = !labeling; syncUI(); }
   else if (ev.key >= '0' && ev.key <= '9') { currentClass = parseInt(ev.key, 10); syncUI(); }
-  else if (ev.key === '[') { brush = Math.max(1, brush - 2); brushEl.value = brush; syncUI(); }
-  else if (ev.key === ']') { brush = Math.min(31, brush + 2); brushEl.value = brush; syncUI(); }
   else if (ev.key.toLowerCase() === 'z') { await fetch('/labeler/undo', {method:'POST'}); refreshPoints(); refreshTable(); }
   else if (ev.key.toLowerCase() === 's') { const j = await fetch('/labeler/save', {method:'POST'}).then(r=>r.json()); alert(`Saved ${j.written} points to ${j.path}`); }
 });
@@ -724,8 +535,7 @@ selAll.addEventListener('change', () => {
 delSel.addEventListener('click', async () => {
   const ids = [...document.querySelectorAll('#tbody tr')].filter(tr => tr.querySelector('.rowchk')?.checked).map(tr => parseInt(tr.dataset.id,10));
   if (!ids.length) { alert('Select rows first'); return; }
-  const unpaint = !!unpaintChk.checked;
-  await fetch('/labeler/points/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids, unpaint})});
+  await fetch('/labeler/points/delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})});
   selAll.checked = false;
   refreshPoints(); refreshTable();
 });
@@ -749,9 +559,8 @@ tbody.addEventListener('click', async (e) => {
     });
     refreshPoints(); refreshTable(); fetchClasses();
   } else if (act === 'del') {
-    const unpaint = !!unpaintChk.checked;
     await fetch('/labeler/points/delete', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ids:[id], unpaint})
+      body: JSON.stringify({ids:[id]})
     });
     refreshPoints(); refreshTable();
   }
@@ -804,7 +613,6 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
 """
         html = (html_template
                 .replace("{CLASSES_JSON}", classes_json)
-                .replace("{BRUSH}", str(BRUSH))
                 .replace("{TILE_TEMPLATE_JS}", tile_template_js))
         return HTMLResponse(html)
 
@@ -833,14 +641,14 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
     async def click(req: Request):
         body = await req.json()
         lon = float(body.get("lon")); lat = float(body.get("lat")); cls = int(body.get("cls"))
-        _paint_pixels(input_path, class_raster_path, lon, lat, cls, BRUSH)
         pid = _STATE["next_pid"]; _STATE["next_pid"] += 1
         _STATE["points"].append({"id": pid, "lon": lon, "lat": lat, "class": cls})
+        _STATE["history"].append(pid)
         return JSONResponse({"ok": True, "id": pid})
 
     @app.post("/labeler/save")
     async def save():
-        written, driver = _write_points(args["points_path"], "EPSG:4326", _STATE["points"], _STATE["classes"])
+        written, driver = _write_points(args["points_path"], _STATE["points"], _STATE["classes"])
         return JSONResponse({"ok": True, "written": written, "path": args["points_path"], "driver": driver})
 
     @app.post("/labeler/undo")
@@ -849,9 +657,12 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
             body = await req.json(); n = int(body.get("n", 1))
         except Exception:
             n = 1
-        undone = _undo(class_raster_path, n=n)
-        for _ in range(min(n, len(_STATE["points"]))):
-            _STATE["points"].pop()
+        undone = 0
+        while n > 0 and _STATE["history"]:
+            last_id = _STATE["history"].pop()
+            _STATE["points"] = [p for p in _STATE["points"] if int(p["id"]) != int(last_id)]
+            undone += 1
+            n -= 1
         return JSONResponse({"ok": True, "undone": undone})
 
     @app.get("/labeler/classes")
@@ -880,14 +691,13 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
     async def update_class(req: Request):
         body = await req.json()
         try:
-            old_id = int(body["id"])  # existing class id
+            old_id = int(body["id"])
         except Exception:
             return JSONResponse({"ok": False, "error": "id required"}, status_code=400)
 
         name  = body.get("name", None)
         color = body.get("color", None)
 
-        # Optional ID change
         new_id = body.get("new_id", None)
         if new_id is not None:
             try:
@@ -899,15 +709,12 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
             if any(int(c["id"]) == new_id for c in _STATE["classes"] if int(c["id"]) != old_id):
                 return JSONResponse({"ok": False, "error": f"new_id {new_id} already in use"}, status_code=400)
 
-            # 1) recode pixels in class raster: old_id -> new_id
-            _recode_raster_values(class_raster_path, old_id, new_id)
-
-            # 2) update points already labeled with old_id
+            # Update points with the new class id
             for p in _STATE["points"]:
                 if int(p["class"]) == old_id:
                     p["class"] = new_id
 
-            # 3) update the class entry's id
+            # Update the class entry's id
             found = False
             for c in _STATE["classes"]:
                 if int(c["id"]) == old_id:
@@ -917,7 +724,6 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
             if not found:
                 return JSONResponse({"ok": False, "error": "id not found"}, status_code=404)
 
-            # subsequent edits should target the new_id
             old_id = new_id
 
         # Apply name/color edits
@@ -956,26 +762,17 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
         for p in _STATE["points"]:
             if int(p["id"]) == pid:
                 p["class"] = new_c
-                _paint_pixels(input_path, class_raster_path, p["lon"], p["lat"], new_c, BRUSH)
                 return JSONResponse({"ok": True})
         return JSONResponse({"ok": False, "error":"id not found"}, status_code=404)
 
     @app.post("/labeler/points/delete")
     async def delete_points(req: Request):
         body = await req.json()
-        ids = body.get("ids") or []
-        unpaint = bool(body.get("unpaint", False))
-        keep = []
-        deleted = 0
-        for p in list(_STATE["points"]):
-            if int(p["id"]) in ids:
-                deleted += 1
-                if unpaint:
-                    _unpaint_pixels(input_path, class_raster_path, p["lon"], p["lat"], BRUSH)
-            else:
-                keep.append(p)
-        _STATE["points"] = keep
-        return JSONResponse({"ok": True, "deleted": deleted, "unpaint": unpaint})
+        ids = set(body.get("ids") or [])
+        before = len(_STATE["points"])
+        _STATE["points"] = [p for p in _STATE["points"] if int(p["id"]) not in ids]
+        deleted = before - len(_STATE["points"])
+        return JSONResponse({"ok": True, "deleted": deleted})
 
     # start uvicorn in a background thread
     def _serve():
@@ -1001,36 +798,16 @@ renderPalette(); syncUI(); refreshPoints(); refreshTable(); fetchClasses();
 # ---------- node entry ----------
 
 def run(args, inputs, context):
-    input_path = (args.get("input_path") or "").strip()
-
-    if not input_path and isinstance(inputs, dict):
-        for v in inputs.values():
-            if isinstance(v, dict) and v.get("type") == "raster" and "path" in v:
-                input_path = v["path"]; break
-            if isinstance(v, list):
-                for it in v:
-                    if isinstance(it, dict) and it.get("type") == "raster" and "path" in it:
-                        input_path = it["path"]; break
-                if input_path:
-                    break
-
-    if not input_path and not bool(args.get("allow_empty_input", True)):
-        raise ValueError("manual_labeler: set 'input_path' or connect a raster upstream, or set allow_empty_input=True.")
-
-    class_raster_path = args.get("class_raster_path") or "./results/labels.tif"
-    _ensure_class_raster(input_path if input_path else None, class_raster_path, autogrid=args.get("autogrid"))
-
-    # Use whichever exists (base or autogrid) to derive CRS for the UI
-    ref_path = input_path if (input_path and os.path.exists(input_path)) else class_raster_path
-    import rasterio
-    with rasterio.open(ref_path) as src:
-        crs_wkt = src.crs.to_string() if src.crs else "EPSG:3857"
-
+    """
+    Points-only labeler.
+    - No raster I/O, no upstream raster required.
+    - Outputs a vector of labeled points and an info message with the UI URL.
+    """
     if not _STATE["server_running"]:
-        _start_server(args, ref_path, class_raster_path, crs_wkt)
+        _start_server(args)
 
     url = _STATE.get("labeler_url", f"http://{args.get('host','127.0.0.1')}:{args.get('port',8090)}/labeler")
     return [
-        {"type":"raster", "path": class_raster_path, "bands":1, "operation":"manual_labels"},
+        {"type":"vector", "path": args.get("points_path") or "./results/labels_points.gpkg", "operation":"labels_points"},
         {"type":"info",   "message": f"Labeler at {url}"}
     ]
