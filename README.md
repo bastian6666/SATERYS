@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛰️ SATERYS
+# <img width="25" height="25" alt="SATERYS_Icon" src="https://github.com/user-attachments/assets/3aca7c9b-4dc9-4cb2-be2b-b59aaf718900" /> SATERYS
 
 ### Scalable Analysis Toolkit for Earth Remote sYStemS
 
@@ -21,7 +21,7 @@
 
 **SATERYS** is a powerful geospatial analysis platform that combines the best of modern web technologies with robust geospatial processing capabilities. Build complex Earth observation workflows using an intuitive drag-and-drop interface, execute Python-based analysis nodes, and visualize results on interactive maps.
 
-![SATERYS Interface](https://github.com/user-attachments/assets/cbe778d1-39d9-49b0-a5f8-c26594e2aa5b)
+![SATERYS Interface](https://github.com/user-attachments/assets/e070d04e-eb8c-4b4e-a798-5a3ad76621ff)
 
 ## ✨ Key Features
 
@@ -30,19 +30,21 @@
 <td>
 
 ### 🎨 **Visual Pipeline Builder**
-- Interactive node-based canvas powered by [Svelvet](https://svelvet.io/)
-- Drag-and-drop workflow creation
-- Real-time connection validation
-- Dark/Light theme support
+- Interactive, node-based workflow canvas powered by [Svelvet](https://svelvet.io/)
+- Drag-and-drop creation and editing of geospatial analysis pipelines
+- Real-time connection validation and error highlighting
+- Dark/Light theme support for comfortable use in any environment
+- Visual grouping and annotation of workflow components
 
 </td>
 <td>
 
 ### ⚡ **High-Performance Backend**
-- FastAPI-powered REST API
-- Asynchronous processing
-- Hot-reloadable plugin system
-- Automatic error handling
+- FastAPI-powered REST API for rapid, scalable processing
+- Asynchronous execution for efficient resource use
+- Hot-reloadable plugin system for instant extension and customization
+- Automatic error handling and detailed logging
+- Built-in job queue for batch and long-running tasks
 
 </td>
 </tr>
@@ -50,19 +52,40 @@
 <td>
 
 ### 🛰️ **Geospatial Native**
-- Built-in support for GeoTIFF, COG, and more
-- Interactive map preview with Leaflet
-- Tile-based raster visualization via [rio-tiler](https://github.com/cogeotiff/rio-tiler)
-- Coordinate system handling
+- Native support for GeoTIFF, COG, and other raster formats
+- Interactive map preview with Leaflet and tile-based raster visualization via [rio-tiler](https://github.com/cogeotiff/rio-tiler)
+- Coordinate system handling and automatic reprojection
+- Raster statistics, band math, and index calculation (NDVI, NDWI, PCA, etc.)
+- Vector data support (GeoJSON, SHP, GPKG) for overlays and analysis
 
 </td>
 <td>
 
-### 🔌 **Extensible Architecture**
-- Plugin-based node system
-- Custom analysis functions
-- Easy integration with existing tools
-- Modular design patterns
+### 🔌 **Extensible & Modular Architecture**
+- Plugin-based node system: add your own analysis nodes in Python
+- Custom analysis functions and reusable workflow components
+- Easy integration with existing Python geospatial tools (NumPy, Rasterio, Shapely, etc.)
+- Modular design for rapid prototyping and extension
+- Built-in and user-defined nodes auto-discovered at startup
+
+</td>
+</tr>
+<tr>
+<td>
+
+### 🧩 **Plugin Ecosystem**
+- Simple plugin API for adding new node types
+- Hot-reload support for rapid development
+- Community-contributed plugins for specialized tasks
+
+</td>
+<td>
+
+### 🖥️ **Modern Web UI**
+- Responsive, single-page application built with Svelte
+- Real-time workflow editing and execution feedback
+- Integrated documentation and example workflows
+- User authentication and role-based access (optional)
 
 </td>
 </tr>
