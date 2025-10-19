@@ -184,7 +184,10 @@
       const r = await fetch('/ai/status');
       const data = await r.json();
       aiStatus = data;
-    } catch { /* AI optional */ }
+    } catch (e) {
+      console.warn('Failed to check AI status:', e);
+      aiStatus = { available: false, provider: null, model: null, error: 'Service check failed' };
+    }
   });
 
   function pushLog(nodeId: string, ok: boolean, text: string) {
@@ -277,6 +280,26 @@
   function clickInput(targetId: string) { if (pendingSource) addEdge(pendingSource, targetId); pendingSource = null; }
   function cancelPending() { pendingSource = null; }
 
+  // AI-powered node generation constants
+  const AI_NODE_BASE_X = 200;
+  const AI_NODE_BASE_Y = 200;
+  const AI_NODE_SPACING = 50;
+
+  function mapAINodeIdsToActualIds(edges, generatedNodes, startNodeIndex) {
+    const mappedEdges = [];
+    for (const edge of edges) {
+      const sourceIdx = generatedNodes.findIndex(n => n.id === edge.source);
+      const targetIdx = generatedNodes.findIndex(n => n.id === edge.target);
+      
+      if (sourceIdx >= 0 && targetIdx >= 0) {
+        const sourceId = `ai_${startNodeIndex + sourceIdx}`;
+        const targetId = `ai_${startNodeIndex + targetIdx}`;
+        mappedEdges.push({ sourceId, targetId });
+      }
+    }
+    return mappedEdges;
+  }
+
   async function generateAIContent() {
     if (!aiPrompt.trim() || aiLoading) return;
     
@@ -288,7 +311,10 @@
         body: JSON.stringify({
           prompt: aiPrompt.trim(),
           type: aiGenerationType,
-          position: { x: 200 + nodes.length * 50, y: 200 + nodes.length * 50 }
+          position: { 
+            x: AI_NODE_BASE_X + nodes.length * AI_NODE_SPACING, 
+            y: AI_NODE_BASE_Y + nodes.length * AI_NODE_SPACING 
+          }
         })
       });
       
@@ -297,6 +323,8 @@
       if (data.success) {
         // Add generated nodes to canvas
         let nextId = nextNodeIndex;
+        const startNodeIndex = nextId;
+        
         for (const nodeData of data.nodes) {
           const id = `ai_${nextId++}`;
           const newNode = {
@@ -311,17 +339,10 @@
         }
         nextNodeIndex = nextId;
         
-        // Add generated edges
-        for (const edge of data.edges) {
-          // Map AI node IDs to actual node IDs - improved mapping
-          const sourceIdx = data.nodes.findIndex(n => n.id === edge.source);
-          const targetIdx = data.nodes.findIndex(n => n.id === edge.target);
-          
-          if (sourceIdx >= 0 && targetIdx >= 0) {
-            const sourceId = `ai_${nextNodeIndex - data.nodes.length + sourceIdx}`;
-            const targetId = `ai_${nextNodeIndex - data.nodes.length + targetIdx}`;
-            addEdge(sourceId, targetId);
-          }
+        // Add generated edges with improved mapping
+        const mappedEdges = mapAINodeIdsToActualIds(data.edges, data.nodes, startNodeIndex);
+        for (const { sourceId, targetId } of mappedEdges) {
+          addEdge(sourceId, targetId);
         }
         
         const statusPrefix = aiStatus.available ? '✅' : '🎭 (Demo)';
