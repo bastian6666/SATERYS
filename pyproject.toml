@@ -29,6 +29,7 @@ dependencies = [
   "SQLAlchemy>=2.0",       # job store backend (SQLite via sqlalchemy)
   "pytz>=2024.1",          # timezones used by APScheduler
   "tzlocal>=5.2",          # local TZ detection (APScheduler dependency, but list explicitly)
+  "requests>=2.31.0",     # HTTP client for OLLAMA API
 ]
 
 classifiers = [

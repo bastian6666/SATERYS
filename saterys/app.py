@@ -227,6 +227,176 @@ def root():
         raise HTTPException(404, "Frontend not built. Run: (cd saterys/web && npm install && npm run build)")
     return FileResponse(index_path)
 
+# ------------------------------------------------------------------------------
+# Workflow management endpoints (save/load flows)
+# ------------------------------------------------------------------------------
+import json
+from pathlib import Path
+
+FLOWS_DIR = Path("flows")
+FLOWS_DIR.mkdir(exist_ok=True)
+
+class WorkflowPayload(BaseModel):
+    name: str
+    nodes: list
+    edges: list
+    description: str = ""
+
+@app.post("/workflows")
+def save_workflow(payload: WorkflowPayload):
+    """Save a workflow to disk"""
+    try:
+        # Sanitize filename to prevent path injection
+        import re
+        sanitized_name = re.sub(r'[^\w\-_.]', '_', payload.name.strip())
+        if not sanitized_name or sanitized_name in ['..', '.']:
+            sanitized_name = 'untitled_workflow'
+        filename = f"{sanitized_name}.json"
+        filepath = FLOWS_DIR / filename
+        
+        # Ensure the resolved path is within FLOWS_DIR to prevent directory traversal
+        if not str(filepath.resolve()).startswith(str(FLOWS_DIR.resolve())):
+            return {"ok": False, "error": "Invalid workflow path"}
+        
+        workflow_data = {
+            "name": payload.name,
+            "description": payload.description,
+            "nodes": payload.nodes,
+            "edges": payload.edges,
+            "created_at": __import__("datetime").datetime.now().isoformat()
+        }
+        
+        with open(filepath, 'w') as f:
+            json.dump(workflow_data, f, indent=2)
+        
+        return {"ok": True, "message": f"Workflow '{payload.name}' saved successfully"}
+    except Exception:
+        return {"ok": False, "error": "Failed to save workflow: Invalid workflow data or filesystem error"}
+
+@app.get("/workflows")
+def list_workflows():
+    """List all saved workflows"""
+    try:
+        workflows = []
+        for filepath in FLOWS_DIR.glob("*.json"):
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                workflows.append({
+                    "name": data.get("name", filepath.stem),
+                    "description": data.get("description", ""),
+                    "created_at": data.get("created_at", ""),
+                    "filename": filepath.name
+                })
+            except Exception:
+                continue
+        return {"workflows": workflows}
+    except Exception:
+        return {"workflows": [], "error": "Failed to list workflows: Filesystem error"}
+
+@app.get("/workflows/{workflow_name}")
+def load_workflow(workflow_name: str):
+    """Load a specific workflow"""
+    try:
+        # Sanitize workflow name to prevent path injection
+        import re
+        sanitized_name = re.sub(r'[^\w\-_.]', '_', workflow_name.strip())
+        if not sanitized_name or sanitized_name in ['..', '.']:
+            raise HTTPException(404, "Invalid workflow name")
+        filename = f"{sanitized_name}.json"
+        filepath = FLOWS_DIR / filename
+        
+        # Ensure the resolved path is within FLOWS_DIR to prevent directory traversal
+        if not str(filepath.resolve()).startswith(str(FLOWS_DIR.resolve())):
+            raise HTTPException(404, "Invalid workflow path")
+        
+        if not filepath.exists():
+            raise HTTPException(404, f"Workflow '{workflow_name}' not found")
+        
+        with open(filepath) as f:
+            workflow_data = json.load(f)
+        
+        return {"ok": True, "workflow": workflow_data}
+    except FileNotFoundError:
+        raise HTTPException(404, f"Workflow '{workflow_name}' not found")
+    except Exception:
+        return {"ok": False, "error": "Failed to load workflow: Invalid file format or filesystem error"}
+
+@app.delete("/workflows/{workflow_name}")
+def delete_workflow(workflow_name: str):
+    """Delete a workflow"""
+    try:
+        # Sanitize workflow name to prevent path injection
+        import re
+        sanitized_name = re.sub(r'[^\w\-_.]', '_', workflow_name.strip())
+        if not sanitized_name or sanitized_name in ['..', '.']:
+            raise HTTPException(404, "Invalid workflow name")
+        filename = f"{sanitized_name}.json"
+        filepath = FLOWS_DIR / filename
+        
+        # Ensure the resolved path is within FLOWS_DIR to prevent directory traversal
+        if not str(filepath.resolve()).startswith(str(FLOWS_DIR.resolve())):
+            raise HTTPException(404, "Invalid workflow path")
+        
+        if not filepath.exists():
+            raise HTTPException(404, f"Workflow '{workflow_name}' not found")
+        
+        filepath.unlink()
+        return {"ok": True, "message": f"Workflow '{workflow_name}' deleted successfully"}
+    except FileNotFoundError:
+        raise HTTPException(404, f"Workflow '{workflow_name}' not found")
+    except Exception:
+        return {"ok": False, "error": "Failed to delete workflow: Filesystem error or invalid operation"}
+
+# ------------------------------------------------------------------------------
+# OLLAMA AI integration endpoints
+# ------------------------------------------------------------------------------
+class OllamaPayload(BaseModel):
+    prompt: str
+    model: str = "llama3.2:latest"
+    ollama_host: str = "http://localhost:11434"
+    temperature: float = 0.7
+    max_tokens: int = 1000
+
+@app.post("/ollama/generate")
+def ollama_generate(payload: OllamaPayload):
+    """Generate AI suggestions using OLLAMA"""
+    try:
+        # Use the OLLAMA node internally
+        ollama_node = PLUGINS.get("ollama.ai")
+        if not ollama_node:
+            return {"ok": False, "error": "OLLAMA node not available"}
+        
+        result = ollama_node.run({
+            "prompt": payload.prompt,
+            "model": payload.model,
+            "ollama_host": payload.ollama_host,
+            "temperature": payload.temperature,
+            "max_tokens": payload.max_tokens
+        }, {}, {"nodeId": "api_ollama"})
+        
+        return result
+    except Exception:
+        return {"ok": False, "error": "OLLAMA generation failed: Service unavailable or invalid request"}
+
+@app.get("/ollama/status")
+def ollama_status():
+    """Check OLLAMA connection status"""
+    try:
+        import requests
+        response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            return {
+                "ok": True, 
+                "status": "connected", 
+                "available_models": [m.get("name", "") for m in models]
+            }
+        else:
+            return {"ok": False, "status": "error", "message": f"HTTP {response.status_code}"}
+    except Exception:
+        return {"ok": False, "status": "disconnected", "message": "Connection failed"}
+
 # Start/stop the APScheduler with the app lifecycle
 @app.on_event("startup")
 async def _start_scheduler():

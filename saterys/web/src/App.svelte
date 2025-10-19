@@ -45,6 +45,7 @@
     { name: 'sum',          default_args: { nums: [1, 2, 3] } },
     { name: 'script',       default_args: { code: "print('hello')" } },
     { name: 'raster.input', default_args: { path: "" } },
+    { name: 'ollama.ai',    default_args: { prompt: "Create a raster processing node", model: "llama3.2:latest" } },
   ];
   onMount(async () => {
     try {
@@ -68,6 +69,13 @@
     sum:   [{ key: 'nums', label: 'Numbers', type: 'array', itemType: 'number', hint: 'e.g., 1,2,3' }],
     script:[{ key: 'code', label: 'Code', type: 'textarea', rows: 8, placeholder: "print('hello')" }],
     'raster.input': [{ key: 'path', label: 'Raster path', type: 'string', placeholder: '/path/to.tif' }],
+    'ollama.ai': [
+      { key: 'prompt', label: 'AI Prompt', type: 'textarea', rows: 4, placeholder: 'Describe the workflow you want to create...' },
+      { key: 'model', label: 'Model', type: 'string', placeholder: 'llama3.2:latest' },
+      { key: 'ollama_host', label: 'OLLAMA Host', type: 'string', placeholder: 'http://localhost:11434' },
+      { key: 'temperature', label: 'Temperature', type: 'number', step: 0.1 },
+      { key: 'max_tokens', label: 'Max Tokens', type: 'number' }
+    ],
   };
 
   function guessSchemaFromDefaults(def: any): Field[] {
@@ -273,6 +281,31 @@
   let viewW = 1200;
   let viewH = 650;
   let canvasRO: ResizeObserver | null = null;
+
+  // ----- Resizable split pane -----
+  let splitRatio = 0.66; // Canvas takes 66% by default
+  let dragging = false;
+  let workAreaEl: HTMLDivElement | null = null;
+
+  function handleSplitDrag(e: MouseEvent) {
+    if (!dragging || !workAreaEl) return;
+    
+    const rect = workAreaEl.getBoundingClientRect();
+    const newRatio = (e.clientX - rect.left) / rect.width;
+    splitRatio = Math.max(0.2, Math.min(0.8, newRatio)); // Limit between 20% and 80%
+  }
+
+  function startDrag() {
+    dragging = true;
+    document.addEventListener('mousemove', handleSplitDrag);
+    document.addEventListener('mouseup', stopDrag);
+  }
+
+  function stopDrag() {
+    dragging = false;
+    document.removeEventListener('mousemove', handleSplitDrag);
+    document.removeEventListener('mouseup', stopDrag);
+  }
 
   function watchCanvasSize() {
     if (!canvasWrapEl) return;
@@ -663,6 +696,264 @@ async function runNow(jobId: string) {
 // kick once on load
 onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
+// ===== WORKFLOW MANAGEMENT (save/load flows) =====
+let savedWorkflows: Array<{name: string; description: string; created_at: string}> = [];
+let showSaveModal = false;
+let showLoadModal = false;
+let saveWorkflowName = '';
+let saveWorkflowDescription = '';
+
+async function loadSavedWorkflows() {
+  try {
+    const response = await fetch('/workflows');
+    const data = await response.json();
+    savedWorkflows = data.workflows || [];
+  } catch (e) {
+    console.error('Failed to load workflows:', e);
+  }
+}
+
+function openSaveModal() {
+  saveWorkflowName = '';
+  saveWorkflowDescription = '';
+  showSaveModal = true;
+}
+
+function openLoadModal() {
+  loadSavedWorkflows();
+  showLoadModal = true;
+}
+
+async function saveCurrentWorkflow() {
+  if (!saveWorkflowName.trim()) {
+    alert('Please enter a workflow name');
+    return;
+  }
+
+  try {
+    const response = await fetch('/workflows', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: saveWorkflowName,
+        description: saveWorkflowDescription,
+        nodes: nodes.map(n => ({
+          id: n.id,
+          type: n.type,
+          position: n.position,
+          label: n.label,
+          args: n.args
+        })),
+        edges: edges.map(e => ({
+          id: e.id,
+          source: e.source,
+          target: e.target
+        }))
+      })
+    });
+
+    const result = await response.json();
+    if (result.ok) {
+      showSaveModal = false;
+      alert(`Workflow "${saveWorkflowName}" saved successfully!`);
+    } else {
+      alert(`Failed to save workflow: ${result.error}`);
+    }
+  } catch (e) {
+    alert(`Error saving workflow: ${e}`);
+  }
+}
+
+async function loadWorkflow(workflowName: string) {
+  try {
+    const response = await fetch(`/workflows/${workflowName}`);
+    const result = await response.json();
+    
+    if (result.ok && result.workflow) {
+      const workflow = result.workflow;
+      
+      // Clear current workflow
+      nodes = [];
+      edges = [];
+      argsText = {};
+      
+      // Load nodes
+      nodes = workflow.nodes.map((n: any) => ({
+        id: n.id,
+        type: n.type,
+        position: n.position,
+        label: n.label,
+        args: n.args || {}
+      }));
+      
+      // Load edges
+      edges = workflow.edges.map((e: any) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target
+      }));
+      
+      // Initialize args text
+      for (const n of nodes) {
+        argsText[n.id] = JSON.stringify(n.args || {}, null, 2);
+      }
+      
+      showLoadModal = false;
+      alert(`Workflow "${workflowName}" loaded successfully!`);
+    } else {
+      alert(`Failed to load workflow: ${result.error || 'Unknown error'}`);
+    }
+  } catch (e) {
+    alert(`Error loading workflow: ${e}`);
+  }
+}
+
+async function deleteWorkflow(workflowName: string) {
+  if (!confirm(`Are you sure you want to delete workflow "${workflowName}"?`)) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/workflows/${workflowName}`, { method: 'DELETE' });
+    const result = await response.json();
+    
+    if (result.ok) {
+      loadSavedWorkflows(); // Refresh list
+      alert(`Workflow "${workflowName}" deleted successfully!`);
+    } else {
+      alert(`Failed to delete workflow: ${result.error}`);
+    }
+  } catch (e) {
+    alert(`Error deleting workflow: ${e}`);
+  }
+}
+
+// ===== OLLAMA AI CHAT INTERFACE =====
+let showAIChat = false;
+let aiChatPrompt = '';
+let aiChatResponse = '';
+let aiGenerating = false;
+let ollamaStatus = { ok: false, status: 'unknown', available_models: [] };
+
+async function checkOllamaStatus() {
+  try {
+    const response = await fetch('/ollama/status');
+    ollamaStatus = await response.json();
+  } catch (e) {
+    ollamaStatus = { ok: false, status: 'error', message: 'Connection failed' };
+  }
+}
+
+function openAIChat() {
+  showAIChat = true;
+  checkOllamaStatus();
+}
+
+async function generateWithAI() {
+  if (!aiChatPrompt.trim()) {
+    alert('Please enter a prompt');
+    return;
+  }
+  
+  aiGenerating = true;
+  aiChatResponse = '';
+  
+  try {
+    const response = await fetch('/ollama/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: aiChatPrompt,
+        model: 'llama3.2:latest',
+        temperature: 0.7,
+        max_tokens: 1000
+      })
+    });
+    
+    const result = await response.json();
+    
+    if (result.success && result.workflow_suggestion) {
+      // AI provided a structured workflow suggestion
+      const suggestion = result.workflow_suggestion;
+      aiChatResponse = `${result.ai_response}\n\n--- Suggested Workflow ---\n${JSON.stringify(suggestion, null, 2)}`;
+      
+      // Ask user if they want to apply the suggestion
+      if (confirm('AI has generated a workflow suggestion. Would you like to add it to the canvas?')) {
+        applyAISuggestion(suggestion);
+      }
+    } else if (result.ai_response) {
+      // AI provided a text response
+      aiChatResponse = result.ai_response;
+    } else {
+      aiChatResponse = `Error: ${result.error || 'Unknown error'}`;
+    }
+  } catch (e) {
+    aiChatResponse = `Error: ${e}`;
+  } finally {
+    aiGenerating = false;
+  }
+}
+
+function applyAISuggestion(suggestion: any) {
+  if (!suggestion.nodes || !Array.isArray(suggestion.nodes)) {
+    alert('Invalid workflow suggestion format');
+    return;
+  }
+  
+  // Find an empty space in the canvas
+  const startX = 120 + (nodes.length % 6) * 260;
+  const startY = 140 + Math.floor(nodes.length / 6) * 140;
+  
+  const nodeIdMap = new Map();
+  
+  // Add nodes from suggestion
+  suggestion.nodes.forEach((suggestedNode: any, index: number) => {
+    const newId = `ai_n${nextNodeIndex++}`;
+    nodeIdMap.set(suggestedNode.id || index, newId);
+    
+    const x = startX + (index % 3) * 260;
+    const y = startY + Math.floor(index / 3) * 140;
+    
+    const nodeType = TYPES.find(t => t.name === suggestedNode.type) || TYPES[0];
+    
+    nodes = [...nodes, {
+      id: newId,
+      position: { x, y },
+      label: suggestedNode.label || `${suggestedNode.type} (${newId})`,
+      type: suggestedNode.type,
+      args: suggestedNode.args || nodeType.default_args || {}
+    }];
+    
+    argsText[newId] = JSON.stringify(suggestedNode.args || nodeType.default_args || {}, null, 2);
+  });
+  
+  // Add edges if provided
+  if (suggestion.edges && Array.isArray(suggestion.edges)) {
+    suggestion.edges.forEach((suggestedEdge: any) => {
+      const sourceId = nodeIdMap.get(suggestedEdge.source);
+      const targetId = nodeIdMap.get(suggestedEdge.target);
+      
+      if (sourceId && targetId) {
+        edges = [...edges, {
+          id: `ai_e${nextEdgeId++}`,
+          source: sourceId,
+          target: targetId
+        }];
+      }
+    });
+  }
+  
+  showAIChat = false;
+  aiChatPrompt = '';
+  alert('AI workflow suggestion applied to canvas!');
+}
+
+// Load workflows on mount
+onMount(async () => { 
+  await refreshSchedules().catch(()=>{});
+  await loadSavedWorkflows().catch(()=>{});
+});
+
 
 </script>
 
@@ -705,6 +996,18 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
       <button class="icon-btn" title="Toggle theme" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
         <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+      </button>
+      <button class="icon-btn" title="AI Chat" on:click={openAIChat}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>AI Chat</span>
+      </button>
+      <button class="icon-btn" title="Save workflow" on:click={openSaveModal}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" stroke-width="2" fill="none"/><polyline points="17,21 17,13 7,13 7,21" stroke="currentColor" stroke-width="2" fill="none"/><polyline points="7,3 7,8 15,8" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        <span>Save</span>
+      </button>
+      <button class="icon-btn" title="Load workflow" on:click={openLoadModal}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="2" fill="none"/><polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="2" fill="none"/><line x1="16" y1="13" x2="8" y2="13" stroke="currentColor" stroke-width="2"/><line x1="16" y1="17" x2="8" y2="17" stroke="currentColor" stroke-width="2"/><polyline points="10,9 9,9 8,9" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        <span>Load</span>
       </button>
       <button class="icon-btn primary" title="Add node" on:click={addNode}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
@@ -811,9 +1114,10 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
     
 
     <!-- Work area: nodes + map -->
-    <div class="work">
-      <div class="split" bind:this={canvasWrapEl}>
-        <Svelvet width={viewW} height={viewH} {theme}>
+    <div class="work" bind:this={workAreaEl}>
+      <div class="split" style="grid-template-columns: {splitRatio * 100}% 4px {(1 - splitRatio) * 100}%;">
+        <div class="canvas-container" bind:this={canvasWrapEl}>
+          <Svelvet width={viewW} height={viewH} {theme}>
           {#each nodes as n, i (n.id)}
             <Node id={n.id} bind:position={nodes[i].position} width={NODE_W} height={NODE_H} let:selected let:grabHandle>
               <div class="node" use:grabHandle aria-selected={selected ? 'true' : 'false'}>
@@ -896,7 +1200,11 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
               {/each}
             {/key}
           </svg>
-        </Svelvet>
+          </Svelvet>
+        </div>
+        
+        <!-- Drag handle -->
+        <div class="drag-handle" on:mousedown={startDrag} title="Drag to resize"></div>
 
         <!-- RIGHT: map viewer -->
         <div class="right" bind:this={mapContainerEl}>
@@ -1017,8 +1325,123 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
   </div>
 {/if}
 
+  <!-- Save Workflow Modal -->
+  {#if showSaveModal}
+    <div class="modal-backdrop" on:click={() => showSaveModal = false}></div>
+    <div class="modal" on:click|stopPropagation>
+      <div class="modal-head">
+        <h3>Save Workflow</h3>
+      </div>
+      
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Workflow Name</label>
+          <input type="text" bind:value={saveWorkflowName} placeholder="My Awesome Workflow" />
+        </div>
+        <div class="form-row">
+          <label>Description (Optional)</label>
+          <textarea rows="3" bind:value={saveWorkflowDescription} placeholder="Describe what this workflow does..."></textarea>
+        </div>
+      </div>
+      
+      <div class="modal-actions">
+        <button class="btn" on:click={() => showSaveModal = false}>Cancel</button>
+        <button class="btn primary" on:click={saveCurrentWorkflow}>Save Workflow</button>
+      </div>
+    </div>
+  {/if}
 
+  <!-- Load Workflow Modal -->
+  {#if showLoadModal}
+    <div class="modal-backdrop" on:click={() => showLoadModal = false}></div>
+    <div class="modal" on:click|stopPropagation>
+      <div class="modal-head">
+        <h3>Load Workflow</h3>
+      </div>
+      
+      <div class="workflow-list">
+        {#if savedWorkflows.length === 0}
+          <div class="muted">No saved workflows found</div>
+        {:else}
+          {#each savedWorkflows as workflow}
+            <div class="workflow-item">
+              <div class="workflow-info">
+                <div class="workflow-name">{workflow.name}</div>
+                <div class="workflow-desc muted small">{workflow.description || 'No description'}</div>
+                <div class="workflow-date muted small">{new Date(workflow.created_at).toLocaleString()}</div>
+              </div>
+              <div class="workflow-actions">
+                <button class="btn small" on:click={() => loadWorkflow(workflow.name)}>Load</button>
+                <button class="btn small" on:click={() => deleteWorkflow(workflow.name)} style="color: #ff6b6b;">Delete</button>
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
+      
+      <div class="modal-actions">
+        <button class="btn" on:click={() => showLoadModal = false}>Close</button>
+      </div>
+    </div>
+  {/if}
 
+  <!-- AI Chat Modal -->
+  {#if showAIChat}
+    <div class="modal-backdrop" on:click={() => showAIChat = false}></div>
+    <div class="modal ai-modal" on:click|stopPropagation>
+      <div class="modal-head">
+        <h3>🤖 OLLAMA AI Assistant</h3>
+        <div class="ollama-status">
+          Status: <span class={ollamaStatus.ok ? 'status-ok' : 'status-error'}>
+            {ollamaStatus.status}
+          </span>
+        </div>
+      </div>
+      
+      <div class="ai-chat-body">
+        <div class="form-row">
+          <label>Describe the workflow you want to create:</label>
+          <textarea 
+            rows="4" 
+            bind:value={aiChatPrompt} 
+            placeholder="Example: Create a workflow to process Landsat imagery, calculate NDVI, and export the results as a GeoTIFF file"
+            disabled={aiGenerating}
+          ></textarea>
+        </div>
+        
+        {#if aiChatResponse}
+          <div class="ai-response">
+            <h4>AI Response:</h4>
+            <pre>{aiChatResponse}</pre>
+          </div>
+        {/if}
+        
+        {#if !ollamaStatus.ok}
+          <div class="ollama-help">
+            <h4>⚠️ OLLAMA Not Available</h4>
+            <p>To use the AI assistant, you need to:</p>
+            <ol>
+              <li>Install OLLAMA from <a href="https://ollama.ai" target="_blank">ollama.ai</a></li>
+              <li>Run: <code>ollama pull llama3.2:latest</code></li>
+              <li>Start OLLAMA server: <code>ollama serve</code></li>
+            </ol>
+          </div>
+        {/if}
+      </div>
+      
+      <div class="modal-actions">
+        <button class="btn" on:click={() => showAIChat = false}>Close</button>
+        <button class="btn" on:click={checkOllamaStatus}>Check Status</button>
+        <button 
+          class="btn primary" 
+          on:click={generateWithAI} 
+          disabled={aiGenerating || !ollamaStatus.ok || !aiChatPrompt.trim()}
+        >
+          {aiGenerating ? 'Generating...' : 'Generate Workflow'}
+        </button>
+      </div>
+    </div>
+  {/if}
 
   <!-- Logs Drawer -->
   <div class="logs-drawer" data-open={showLogs ? 'true' : 'false'}>
@@ -1152,12 +1575,28 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
   .work { min-width: 0; min-height: 0; height: 100%; }
   .split {
-    position: relative; display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
-    gap: 8px; height: 100%; min-height: 0; padding: 8px; box-sizing: border-box; align-items: stretch; overflow: hidden;
+    position: relative; display: grid; 
+    height: 100%; min-height: 0; padding: 8px; box-sizing: border-box; align-items: stretch; overflow: hidden;
   }
+  .canvas-container { min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
+  
+  /* Drag handle for resizing */
+  .drag-handle {
+    background: var(--border); cursor: col-resize; position: relative;
+    transition: background-color 0.2s ease;
+  }
+  .drag-handle:hover { background: var(--accent); }
+  .drag-handle::before {
+    content: '⋮⋮';
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: var(--muted); font-size: 14px; line-height: 1;
+  }
+  
   @media (max-width: 900px) {
     .main { --sidebar-w: 56px; }
-    .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 55%) minmax(0, 45%); }
+    .split { grid-template-columns: 1fr !important; grid-template-rows: minmax(0, 55%) 4px minmax(0, 45%); }
+    .drag-handle { cursor: row-resize; }
+    .drag-handle::before { content: '⋯⋯'; }
   }
 
   /* Canvas viewport + map */
@@ -1257,4 +1696,48 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
   .logs-body li.ok { color: #d7f5dd; }
   .logs-body li.err { color: #ffd6d6; }
   .logs-body code { background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 999px; margin-right: 6px; }
+
+  /* Workflow Management */
+  .workflow-list { max-height: 400px; overflow-y: auto; padding: 8px 0; }
+  .workflow-item { 
+    display: flex; justify-content: space-between; align-items: center; 
+    padding: 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px;
+    background: rgba(255,255,255,0.02);
+  }
+  .workflow-info { flex: 1; }
+  .workflow-name { font-weight: 600; color: #e5e7eb; }
+  .workflow-desc { margin-top: 4px; }
+  .workflow-date { margin-top: 2px; }
+  .workflow-actions { display: flex; gap: 8px; }
+  .btn.small { padding: 4px 8px; font-size: 12px; }
+
+  /* AI Chat Modal */
+  .modal.ai-modal { width: 800px; max-height: 90vh; }
+  .ai-chat-body { flex: 1; overflow-y: auto; padding: 6px 2px; }
+  .ai-response { 
+    margin-top: 16px; padding: 12px; 
+    background: rgba(96, 165, 250, 0.1); border: 1px solid rgba(96, 165, 250, 0.3);
+    border-radius: 8px;
+  }
+  .ai-response h4 { margin: 0 0 8px 0; color: var(--accent); }
+  .ai-response pre { 
+    white-space: pre-wrap; font-size: 13px; line-height: 1.4; 
+    margin: 0; max-height: 300px; overflow-y: auto;
+  }
+  
+  .ollama-status { font-size: 12px; }
+  .status-ok { color: #4ade80; }
+  .status-error { color: #f87171; }
+  
+  .ollama-help { 
+    margin-top: 16px; padding: 12px; 
+    background: rgba(251, 146, 60, 0.1); border: 1px solid rgba(251, 146, 60, 0.3);
+    border-radius: 8px;
+  }
+  .ollama-help h4 { margin: 0 0 8px 0; color: #fb923c; }
+  .ollama-help code { 
+    background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; 
+    font-family: monospace; 
+  }
+  .ollama-help a { color: var(--accent); }
 </style>
