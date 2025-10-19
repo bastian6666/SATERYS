@@ -5,11 +5,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Any, Dict  # IMPORTANT: Dict[...] for Py3.7
+from typing import Any, Dict, List, Optional  # IMPORTANT: Dict[...] for Py3.7
 import importlib.util
 import os
 import sys
 from .scheduling import pipeline_router, scheduler
+from .ai_service import create_ai_service, NodeConfig, PipelineConfig
 
 # ------------------------------------------------------------------------------
 # FastAPI app + CORS
@@ -61,6 +62,26 @@ def discover_plugins():
 discover_plugins()
 
 # ------------------------------------------------------------------------------
+# AI service initialization
+# ------------------------------------------------------------------------------
+AI_SERVICE = None
+
+def get_ai_service():
+    """Get or create AI service instance"""
+    global AI_SERVICE
+    if AI_SERVICE is None:
+        # Try OLLAMA first, fall back to OpenAI if configured
+        try:
+            AI_SERVICE = create_ai_service("ollama")
+            if not AI_SERVICE.is_available():
+                # Try OpenAI if OLLAMA is not available
+                AI_SERVICE = create_ai_service("openai")
+        except Exception as e:
+            print(f"Failed to initialize AI service: {e}")
+            AI_SERVICE = None
+    return AI_SERVICE
+
+# ------------------------------------------------------------------------------
 # API models + endpoints
 # ------------------------------------------------------------------------------
 class RunPayload(BaseModel):
@@ -68,6 +89,23 @@ class RunPayload(BaseModel):
     type: str         # plugin name
     args: Dict[str, Any] = {}
     inputs: Dict[str, Any] = {}  # optional upstream data
+
+class AIPromptPayload(BaseModel):
+    prompt: str
+    type: str = "pipeline"  # "pipeline" or "node"
+    position: Optional[Dict[str, float]] = None
+
+class AINodeResponse(BaseModel):
+    node: Dict[str, Any]
+    success: bool
+    error: Optional[str] = None
+
+class AIPipelineResponse(BaseModel):
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, str]]
+    description: str
+    success: bool
+    error: Optional[str] = None
 
 @app.get("/node_types")
 def node_types():
@@ -89,6 +127,137 @@ def run_node(p: RunPayload):
         return {"ok": True, "output": res}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+# ------------------------------------------------------------------------------
+# AI-powered node generation endpoints
+# ------------------------------------------------------------------------------
+
+@app.get("/ai/status")
+def ai_status():
+    """Check AI service status and capabilities"""
+    ai_service = get_ai_service()
+    if ai_service is None:
+        return {
+            "available": False,
+            "provider": None,
+            "model": None,
+            "models": [],
+            "error": "AI service not initialized"
+        }
+    
+    return {
+        "available": ai_service.is_available(),
+        "provider": ai_service.provider.value,
+        "model": ai_service.model,
+        "models": ai_service.get_available_models()
+    }
+
+@app.post("/ai/generate", response_model=AIPipelineResponse)
+def generate_ai_content(payload: AIPromptPayload):
+    """Generate nodes or pipelines using AI"""
+    ai_service = get_ai_service()
+    
+    # For demonstration purposes, if AI service is not available, return a mock response
+    if ai_service is None or not ai_service.is_available():
+        # Mock response for demonstration
+        if payload.type == "node":
+            mock_node = {
+                "id": f"demo_node_{hash(payload.prompt) % 1000}",
+                "type": "hello",
+                "label": "hello (demo_node)",
+                "args": {"name": "AI Demo"},
+                "position": payload.position or {"x": 200, "y": 200},
+                "description": f"Demo node for: {payload.prompt}"
+            }
+            return AIPipelineResponse(
+                nodes=[mock_node],
+                edges=[],
+                description=f"Demo AI-generated node for: {payload.prompt}",
+                success=True
+            )
+        else:  # pipeline
+            mock_nodes = [
+                {
+                    "id": "input_demo",
+                    "type": "raster.input",
+                    "label": "raster.input (input_demo)",
+                    "args": {"path": "/path/to/demo.tif"},
+                    "position": {"x": 100, "y": 200},
+                    "description": "Demo input node"
+                },
+                {
+                    "id": "ndvi_demo", 
+                    "type": "raster.ndvi",
+                    "label": "raster.ndvi (ndvi_demo)",
+                    "args": {"red_band": 4, "nir_band": 5},
+                    "position": {"x": 400, "y": 200},
+                    "description": "Demo NDVI calculation"
+                }
+            ]
+            mock_edges = [{"source": "input_demo", "target": "ndvi_demo"}]
+            
+            return AIPipelineResponse(
+                nodes=mock_nodes,
+                edges=mock_edges,
+                description=f"Demo AI-generated pipeline for: {payload.prompt}",
+                success=True
+            )
+    
+    try:
+        if payload.type == "node":
+            # Generate a single node
+            node_config = ai_service.generate_single_node(
+                payload.prompt, 
+                payload.position or {"x": 200, "y": 200}
+            )
+            
+            node_dict = {
+                "id": node_config.name,
+                "type": node_config.type,
+                "label": f"{node_config.type} ({node_config.name})",
+                "args": node_config.args,
+                "position": node_config.position,
+                "description": node_config.description
+            }
+            
+            return AIPipelineResponse(
+                nodes=[node_dict],
+                edges=[],
+                description=f"AI-generated node: {node_config.description}",
+                success=True
+            )
+        
+        else:  # pipeline
+            # Generate a full pipeline
+            pipeline_config = ai_service.generate_pipeline(payload.prompt)
+            
+            nodes_dict = []
+            for node_config in pipeline_config.nodes:
+                node_dict = {
+                    "id": node_config.name,
+                    "type": node_config.type,
+                    "label": f"{node_config.type} ({node_config.name})",
+                    "args": node_config.args,
+                    "position": node_config.position,
+                    "description": node_config.description
+                }
+                nodes_dict.append(node_dict)
+            
+            return AIPipelineResponse(
+                nodes=nodes_dict,
+                edges=pipeline_config.edges,
+                description=pipeline_config.description,
+                success=True
+            )
+            
+    except Exception as e:
+        return AIPipelineResponse(
+            nodes=[],
+            edges=[],
+            description="",
+            success=False,
+            error=str(e)
+        )
 
 # ------------------------------------------------------------------------------
 # Raster preview endpoints (Leaflet tiles) — Py3.7 compatible

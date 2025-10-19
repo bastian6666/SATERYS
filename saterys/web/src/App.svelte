@@ -171,6 +171,22 @@
   // sidebar collapse
   let sidebarCollapsed = false;
 
+  // AI prompt interface
+  let showAIPrompt = false;
+  let aiPrompt = '';
+  let aiGenerationType = 'pipeline'; // 'pipeline' or 'node'
+  let aiLoading = false;
+  let aiStatus = { available: false, provider: null, model: null };
+
+  // Check AI status on mount
+  onMount(async () => {
+    try {
+      const r = await fetch('/ai/status');
+      const data = await r.json();
+      aiStatus = data;
+    } catch { /* AI optional */ }
+  });
+
   function pushLog(nodeId: string, ok: boolean, text: string) {
     logs = [...logs, { nodeId, ok, text }];
     if (showLogs) requestAnimationFrame(() => {
@@ -260,6 +276,70 @@
   function clickOutput(nodeId: string) { pendingSource = nodeId; }
   function clickInput(targetId: string) { if (pendingSource) addEdge(pendingSource, targetId); pendingSource = null; }
   function cancelPending() { pendingSource = null; }
+
+  async function generateAIContent() {
+    if (!aiPrompt.trim() || aiLoading) return;
+    
+    aiLoading = true;
+    try {
+      const response = await fetch('/ai/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: aiPrompt.trim(),
+          type: aiGenerationType,
+          position: { x: 200 + nodes.length * 50, y: 200 + nodes.length * 50 }
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        // Add generated nodes to canvas
+        let nextId = nextNodeIndex;
+        for (const nodeData of data.nodes) {
+          const id = `ai_${nextId++}`;
+          const newNode = {
+            id,
+            position: nodeData.position,
+            label: nodeData.label || `${nodeData.type} (${id})`,
+            type: nodeData.type,
+            args: nodeData.args || {}
+          };
+          nodes = [...nodes, newNode];
+          argsText[id] = JSON.stringify(newNode.args, null, 2);
+        }
+        nextNodeIndex = nextId;
+        
+        // Add generated edges
+        for (const edge of data.edges) {
+          // Map AI node IDs to actual node IDs - improved mapping
+          const sourceIdx = data.nodes.findIndex(n => n.id === edge.source);
+          const targetIdx = data.nodes.findIndex(n => n.id === edge.target);
+          
+          if (sourceIdx >= 0 && targetIdx >= 0) {
+            const sourceId = `ai_${nextNodeIndex - data.nodes.length + sourceIdx}`;
+            const targetId = `ai_${nextNodeIndex - data.nodes.length + targetIdx}`;
+            addEdge(sourceId, targetId);
+          }
+        }
+        
+        const statusPrefix = aiStatus.available ? '✅' : '🎭 (Demo)';
+        pushLog('ai', true, `${statusPrefix} Generated ${data.nodes.length} node(s): ${data.description}`);
+        showLogs = true;
+        aiPrompt = '';
+        showAIPrompt = false;
+      } else {
+        pushLog('ai', false, `❌ AI generation failed: ${data.error}`);
+        showLogs = true;
+      }
+    } catch (e) {
+      pushLog('ai', false, `❌ AI request failed: ${e?.message || e}`);
+      showLogs = true;
+    } finally {
+      aiLoading = false;
+    }
+  }
 
   const leftX  = (n: NodeData) => n.position.x;
   const rightX = (n: NodeData) => n.position.x + NODE_W;
@@ -710,6 +790,10 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
         <span>Add</span>
       </button>
+      <button class="icon-btn ai" title="AI Prompt" on:click={() => showAIPrompt = !showAIPrompt}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 2l3.09 6.26L22 9l-5 4.74L18.18 22 12 18.27 5.82 22 7 13.74 2 9l6.91-.74L12 2z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        <span>AI Prompt</span>
+      </button>
     </div>
   </header>
 
@@ -738,6 +822,10 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
           <button class="tool" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'} title="Toggle theme">
             <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
             <span class="txt">Theme: {theme}</span>
+          </button>
+          <button class="tool" on:click={() => showAIPrompt = !showAIPrompt} title="AI Prompt">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2l3.09 6.26L22 9l-5 4.74L18.18 22 12 18.27 5.82 22 7 13.74 2 9l6.91-.74L12 2z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            <span class="txt">AI Prompt</span>
           </button>
         </div>
       </div>
@@ -1017,6 +1105,103 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
   </div>
 {/if}
 
+  <!-- AI Prompt Modal -->
+  {#if showAIPrompt}
+    <div class="modal-backdrop" on:click={() => showAIPrompt = false}></div>
+    <div class="modal ai-modal" on:click|stopPropagation>
+      <div class="modal-head">
+        <h3>AI Assistant</h3>
+        <div class="ai-status">
+          {#if aiStatus.available}
+            <span class="status-indicator success"></span>
+            <span class="status-text">{aiStatus.provider} ({aiStatus.model})</span>
+          {:else}
+            <span class="status-indicator demo"></span>
+            <span class="status-text">Demo Mode (OLLAMA/OpenAI not configured)</span>
+          {/if}
+        </div>
+      </div>
+
+      <div class="form-grid">
+        <div class="form-row">
+          <label>Generation Type</label>
+          <select bind:value={aiGenerationType}>
+            <option value="pipeline">Full Pipeline</option>
+            <option value="node">Single Node</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <label>Describe what you want to create:</label>
+          <textarea 
+            rows="4" 
+            bind:value={aiPrompt} 
+            placeholder="Example: Create a workflow to calculate NDVI from Landsat imagery, or Add a node to filter raster data by threshold"
+            on:keydown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                generateAIContent();
+              }
+            }}
+          ></textarea>
+          <small class="muted">
+            {#if aiGenerationType === 'pipeline'}
+              Describe a complete workflow (e.g., "analyze forest cover change using NDVI")
+            {:else}
+              Describe a single processing step (e.g., "calculate vegetation index")
+            {/if}
+            <br>Press Ctrl/Cmd+Enter to generate
+          </small>
+        </div>
+
+        <div class="form-row">
+          <div class="ai-examples">
+            <span class="examples-label">Examples:</span>
+            <div class="example-chips">
+              <button 
+                class="example-chip" 
+                on:click={() => aiPrompt = "Create a workflow to calculate NDVI from satellite imagery"}
+              >
+                NDVI Analysis
+              </button>
+              <button 
+                class="example-chip" 
+                on:click={() => aiPrompt = "Build a pipeline for water body detection using NDWI"}
+              >
+                Water Detection
+              </button>
+              <button 
+                class="example-chip" 
+                on:click={() => aiPrompt = "Add a PCA node for dimensionality reduction"}
+              >
+                PCA Analysis
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" on:click={() => showAIPrompt = false}>Cancel</button>
+        <button 
+          class="btn primary ai-generate-btn" 
+          on:click={generateAIContent} 
+          disabled={!aiPrompt.trim() || aiLoading}
+        >
+          {#if aiLoading}
+            <svg class="spinner" viewBox="0 0 24 24" width="16" height="16">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" opacity="0.3"/>
+              <path d="M2 12a10 10 0 0 1 10-10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+            </svg>
+            Generating...
+          {:else}
+            ✨ Generate {aiGenerationType === 'pipeline' ? 'Pipeline' : 'Node'}
+            {#if !aiStatus.available} (Demo){/if}
+          {/if}
+        </button>
+      </div>
+    </div>
+  {/if}
+
 
 
 
@@ -1105,6 +1290,8 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
   .icon-btn:disabled { opacity:.6; cursor: default; }
   .icon-btn.primary { border-color:#3b82f6; }
   .icon-btn.ghost { background:transparent; border-color:var(--border); }
+  .icon-btn.ai { border-color:#a855f7; background: linear-gradient(45deg, #a855f7, #8b5cf6); }
+  .icon-btn.ai:hover { background: linear-gradient(45deg, #9333ea, #7c3aed); }
 
 
   .runone-btn {
@@ -1257,4 +1444,45 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
   .logs-body li.ok { color: #d7f5dd; }
   .logs-body li.err { color: #ffd6d6; }
   .logs-body code { background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 999px; margin-right: 6px; }
+
+  /* AI Modal Styles */
+  .ai-modal { max-width: 600px; }
+  .ai-status { display: flex; align-items: center; gap: 6px; }
+  .status-indicator { width: 8px; height: 8px; border-radius: 50%; }
+  .status-indicator.success { background: #22c55e; }
+  .status-indicator.error { background: #ef4444; }
+  .status-indicator.demo { background: #f59e0b; }
+  .status-text { font-size: 12px; color: #9aa3ad; }
+  
+  .ai-examples { display: flex; flex-direction: column; gap: 8px; }
+  .examples-label { font-size: 12px; color: #cbd5e1; font-weight: 600; }
+  .example-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .example-chip { 
+    background: rgba(168, 85, 247, 0.1); 
+    border: 1px solid rgba(168, 85, 247, 0.3); 
+    color: #c4b5fd; 
+    border-radius: 999px; 
+    padding: 4px 12px; 
+    font-size: 12px; 
+    cursor: pointer; 
+    transition: all 0.2s ease;
+  }
+  .example-chip:hover { 
+    background: rgba(168, 85, 247, 0.2); 
+    border-color: rgba(168, 85, 247, 0.5); 
+  }
+  
+  .ai-generate-btn { 
+    display: flex; 
+    align-items: center; 
+    gap: 6px; 
+    background: linear-gradient(45deg, #a855f7, #8b5cf6); 
+    border-color: #a855f7; 
+  }
+  .ai-generate-btn:hover:not(:disabled) { 
+    background: linear-gradient(45deg, #9333ea, #7c3aed); 
+  }
+  
+  .spinner { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
