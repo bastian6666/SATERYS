@@ -279,10 +279,56 @@
     if (canvasRO) canvasRO.disconnect();
     canvasRO = new ResizeObserver(() => {
       if (!canvasWrapEl) return;
-      viewW = Math.max(320, Math.floor(canvasWrapEl.clientWidth  - 1));
-      viewH = Math.max(240, Math.floor(canvasWrapEl.clientHeight - 1));
+      const canvasArea = canvasWrapEl.querySelector('.canvas-area') as HTMLElement;
+      if (canvasArea) {
+        viewW = Math.max(320, Math.floor(canvasArea.clientWidth  - 1));
+        viewH = Math.max(240, Math.floor(canvasArea.clientHeight - 1));
+      }
     });
     canvasRO.observe(canvasWrapEl);
+  }
+
+  // ----- Resizable split panel -----
+  let splitPosition = 66.67; // percentage, canvas takes 2/3 initially
+  let isDragging = false;
+
+  function startDrag(e: MouseEvent | TouchEvent) {
+    isDragging = true;
+    document.addEventListener('mousemove', handleDrag);
+    document.addEventListener('mouseup', stopDrag);
+    document.addEventListener('touchmove', handleDrag);
+    document.addEventListener('touchend', stopDrag);
+    e.preventDefault();
+  }
+
+  function handleDrag(e: MouseEvent | TouchEvent) {
+    if (!isDragging) return;
+    const workArea = document.querySelector('.split') as HTMLElement;
+    if (!workArea) return;
+    
+    const rect = workArea.getBoundingClientRect();
+    
+    // Get position from mouse or touch event
+    let clientX: number;
+    if (e instanceof MouseEvent) {
+      clientX = e.clientX;
+    } else {
+      clientX = e.touches[0]?.clientX || 0;
+    }
+    
+    const percentage = ((clientX - rect.left) / rect.width) * 100;
+    splitPosition = Math.max(25, Math.min(75, percentage)); // constrain between 25-75%
+    
+    // Trigger map resize after a short delay
+    requestAnimationFrame(() => map?.invalidateSize());
+  }
+
+  function stopDrag() {
+    isDragging = false;
+    document.removeEventListener('mousemove', handleDrag);
+    document.removeEventListener('mouseup', stopDrag);
+    document.removeEventListener('touchmove', handleDrag);
+    document.removeEventListener('touchend', stopDrag);
   }
 
   // ----- Leaflet map (always-on) -----
@@ -392,10 +438,35 @@
     newLayer.addTo(map);
     layerControl.addOverlay(newLayer, layerName);
 
-    const b = await fetch(`/preview/bounds/${id}`).then(r => r.json());
-    const [west, south, east, north] = b.bounds;
-    const bounds = L.latLngBounds([south, west], [north, east]);
-    map.fitBounds(bounds, { padding: [10, 10] });
+    // Auto-zoom to new image bounds
+    try {
+      const b = await fetch(`/preview/bounds/${id}`).then(r => r.json());
+      const [west, south, east, north] = b.bounds;
+      const bounds = L.latLngBounds([south, west], [north, east]);
+      
+      // Animate to bounds with nice easing for better user experience  
+      map.fitBounds(bounds, { 
+        padding: [20, 20], 
+        animate: true, 
+        duration: 0.8,
+        maxZoom: 18  // Prevent zooming in too close
+      });
+      
+      // Show a brief notification
+      pushLog(n.id, true, `📍 Zoomed to image bounds: ${layerName}`);
+      if (!showLogs) {
+        // Flash a subtle indication that zoom occurred
+        const mapEl = document.querySelector('.map');
+        if (mapEl) {
+          (mapEl as HTMLElement).style.boxShadow = '0 0 0 3px rgba(96, 165, 250, 0.5)';
+          setTimeout(() => {
+            (mapEl as HTMLElement).style.boxShadow = '';
+          }, 1000);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to get bounds for auto-zoom:', e);
+    }
   }
 
   function clearOverlayLayers() {
@@ -541,6 +612,92 @@ $: if (!showLogs && runPollTimer) { clearInterval(runPollTimer); runPollTimer = 
 
 // cleanup on hot reload / navigate
 onDestroy(() => { if (runPollTimer) clearInterval(runPollTimer); });
+
+
+// ===== WORKFLOW SAVE/LOAD =====
+type WorkflowExport = {
+  version: string;
+  timestamp: string;
+  nodes: NodeData[];
+  edges: EdgeData[];
+  splitPosition: number;
+  nextNodeIndex: number;
+  nextEdgeId: number;
+};
+
+function exportWorkflow(): WorkflowExport {
+  return {
+    version: "1.0",
+    timestamp: new Date().toISOString(),
+    nodes: JSON.parse(JSON.stringify(nodes)),
+    edges: JSON.parse(JSON.stringify(edges)),
+    splitPosition,
+    nextNodeIndex,
+    nextEdgeId
+  };
+}
+
+function importWorkflow(data: WorkflowExport) {
+  try {
+    nodes = data.nodes || [];
+    edges = data.edges || [];
+    splitPosition = data.splitPosition || 66.67;
+    nextNodeIndex = data.nextNodeIndex || (Math.max(...nodes.map(n => parseInt(n.id.slice(1)) || 0)) + 1);
+    nextEdgeId = data.nextEdgeId || (Math.max(...edges.map(e => parseInt(e.id.slice(1)) || 0)) + 1);
+    
+    // Rebuild argsText
+    argsText = {};
+    for (const n of nodes) {
+      try {
+        argsText[n.id] = JSON.stringify(n.args ?? {}, null, 2);
+      } catch {
+        argsText[n.id] = '{}';
+      }
+    }
+    
+    // Clear overlays since node IDs might have changed
+    clearOverlayLayers();
+  } catch (e) {
+    alert(`Failed to import workflow: ${e}`);
+  }
+}
+
+function saveWorkflowToFile() {
+  const workflow = exportWorkflow();
+  const blob = new Blob([JSON.stringify(workflow, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `workflow-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function loadWorkflowFromFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = (e: any) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const reader = new FileReader();
+    reader.onload = (e: any) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (confirm('This will replace your current workflow. Continue?')) {
+          importWorkflow(data);
+        }
+      } catch (e) {
+        alert(`Failed to parse workflow file: ${e}`);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
 
 
 // ===== PIPELINE SCHEDULING (entire graph) =====
@@ -706,6 +863,14 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
         <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
       </button>
+      <button class="icon-btn" title="Save workflow" on:click={saveWorkflowToFile}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2zM7 3v6h10M9 17h6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Save</span>
+      </button>
+      <button class="icon-btn" title="Load workflow" on:click={loadWorkflowFromFile}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Load</span>
+      </button>
       <button class="icon-btn primary" title="Add node" on:click={addNode}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
         <span>Add</span>
@@ -812,94 +977,100 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
     <!-- Work area: nodes + map -->
     <div class="work">
-      <div class="split" bind:this={canvasWrapEl}>
-        <Svelvet width={viewW} height={viewH} {theme}>
-          {#each nodes as n, i (n.id)}
-            <Node id={n.id} bind:position={nodes[i].position} width={NODE_W} height={NODE_H} let:selected let:grabHandle>
-              <div class="node" use:grabHandle aria-selected={selected ? 'true' : 'false'}>
-                <div class="node-title">{n.label}</div>
+      <div class="split" style="--split-pos: {splitPosition}" bind:this={canvasWrapEl}>
+        <!-- LEFT: Canvas -->
+        <div class="canvas-area">
+          <Svelvet width={viewW} height={viewH} {theme}>
+            {#each nodes as n, i (n.id)}
+              <Node id={n.id} bind:position={nodes[i].position} width={NODE_W} height={NODE_H} let:selected let:grabHandle>
+                <div class="node" use:grabHandle aria-selected={selected ? 'true' : 'false'}>
+                  <div class="node-title">{n.label}</div>
 
-                <!-- handles -->
-                <button class="dot in"  title="input"  on:click={() => clickInput(n.id)} />
-                <button class="dot out" title="output" on:click={() => clickOutput(n.id)} aria-pressed={pendingSource === n.id} />
+                  <!-- handles -->
+                  <button class="dot in"  title="input"  on:click={() => clickInput(n.id)} />
+                  <button class="dot out" title="output" on:click={() => clickOutput(n.id)} aria-pressed={pendingSource === n.id} />
 
-                <!-- delete -->
-                <button class="node-del" title="delete node" on:click={() => deleteNode(n.id)}>🗑</button>
+                  <!-- delete -->
+                  <button class="node-del" title="delete node" on:click={() => deleteNode(n.id)}>🗑</button>
 
-                <!-- type + args -->
-                <div class="node-config">
-                  <select bind:value={nodes[i].type} on:change={() => {
-                    const t = TYPES.find(tt => tt.name === nodes[i].type);
-                    const defaults = t?.default_args ?? {};
-                    nodes[i].args = JSON.parse(JSON.stringify(defaults));
-                    nodes[i].label = `${nodes[i].type} (${n.id})`;
-                    argsText[n.id] = JSON.stringify(nodes[i].args, null, 2);
-                  }}>
-                    {#each TYPES as t}
-                      <option value={t.name}>{t.name}</option>
-                    {/each}
-                  </select>
+                  <!-- type + args -->
+                  <div class="node-config">
+                    <select bind:value={nodes[i].type} on:change={() => {
+                      const t = TYPES.find(tt => tt.name === nodes[i].type);
+                      const defaults = t?.default_args ?? {};
+                      nodes[i].args = JSON.parse(JSON.stringify(defaults));
+                      nodes[i].label = `${nodes[i].type} (${n.id})`;
+                      argsText[n.id] = JSON.stringify(nodes[i].args, null, 2);
+                    }}>
+                      {#each TYPES as t}
+                        <option value={t.name}>{t.name}</option>
+                      {/each}
+                    </select>
 
-                  <!-- field editor (modal) -->
-                  <button class="edit-btn" on:click={() => openArgsModal(n)}>⚙</button>
+                    <!-- field editor (modal) -->
+                    <button class="edit-btn" on:click={() => openArgsModal(n)}>⚙</button>
 
-                  <!-- map preview -->
-                  <button class="preview-btn" title="Preview on map" on:click={() => previewNode(n, i)}>👁</button>
-                  <button
-                      class="runone-btn"
-                      title="Run this node only"
-                      on:click={async () => {
-                        try {
-                          // Call the same endpoint used in the pipeline, but only for this node.
-                          const data = await runNode(n, {});   // inputs can be empty for manual_labeler
-                          showLogs = true;                     // open logs drawer
-                          pushLog(n.id, !!data?.ok, data?.ok
-                            ? (data?.output?.message || 'Started')
-                            : (data?.error || 'Error'));
-                        } catch (e) {
-                          pushLog(n.id, false, `Exception: ${
-                            typeof e === 'object' && e !== null && 'message' in e
-                              ? e.message
-                              : String(e)
-                          }`);
-                          showLogs = true;
-                        }
-                      }}>
-                      ▶
-                    </button>
+                    <!-- map preview -->
+                    <button class="preview-btn" title="Preview on map" on:click={() => previewNode(n, i)}>👁</button>
+                    <button
+                        class="runone-btn"
+                        title="Run this node only"
+                        on:click={async () => {
+                          try {
+                            // Call the same endpoint used in the pipeline, but only for this node.
+                            const data = await runNode(n, {});   // inputs can be empty for manual_labeler
+                            showLogs = true;                     // open logs drawer
+                            pushLog(n.id, !!data?.ok, data?.ok
+                              ? (data?.output?.message || 'Started')
+                              : (data?.error || 'Error'));
+                          } catch (e) {
+                            pushLog(n.id, false, `Exception: ${
+                              typeof e === 'object' && e !== null && 'message' in e
+                                ? e.message
+                                : String(e)
+                            }`);
+                            showLogs = true;
+                          }
+                        }}>
+                        ▶
+                      </button>
+                  </div>
                 </div>
-              </div>
-            </Node>
-          {/each}
+              </Node>
+            {/each}
 
-          <!-- Edges overlay (fixed duplicate loop bug) -->
-          <svg class="edges-overlay" viewBox={`0 0 ${viewW} ${viewH}`} preserveAspectRatio="none">
-            {#key positionsKey}
-              <defs>
-                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" />
-                </marker>
-              </defs>
-              {#each edges as e (e.id)}
-                {#if nodeById(e.source) && nodeById(e.target)}
-                  {@const s = nodeByIdStrict(e.source)}
-                  {@const t = nodeByIdStrict(e.target)}
-                  <path
-                    d={`M ${rightX(s)} ${midY(s)}
-                        C ${rightX(s)+60} ${midY(s)},
-                          ${leftX(t)-60} ${midY(t)},
-                          ${leftX(t)} ${midY(t)}`}
-                    class="cable"
-                    marker-end="url(#arrow)"
-                  />
-                {/if}
-              {/each}
-            {/key}
-          </svg>
-        </Svelvet>
+            <!-- Edges overlay (fixed duplicate loop bug) -->
+            <svg class="edges-overlay" viewBox={`0 0 ${viewW} ${viewH}`} preserveAspectRatio="none">
+              {#key positionsKey}
+                <defs>
+                  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" />
+                  </marker>
+                </defs>
+                {#each edges as e (e.id)}
+                  {#if nodeById(e.source) && nodeById(e.target)}
+                    {@const s = nodeByIdStrict(e.source)}
+                    {@const t = nodeByIdStrict(e.target)}
+                    <path
+                      d={`M ${rightX(s)} ${midY(s)}
+                          C ${rightX(s)+60} ${midY(s)},
+                            ${leftX(t)-60} ${midY(t)},
+                            ${leftX(t)} ${midY(t)}`}
+                      class="cable"
+                      marker-end="url(#arrow)"
+                    />
+                  {/if}
+                {/each}
+              {/key}
+            </svg>
+          </Svelvet>
+        </div>
+
+        <!-- SPLITTER -->
+        <div class="splitter" on:mousedown={startDrag} on:touchstart={startDrag}></div>
 
         <!-- RIGHT: map viewer -->
-        <div class="right" bind:this={mapContainerEl}>
+        <div class="map-area" bind:this={mapContainerEl}>
           <div bind:this={mapEl} class="map"></div>
         </div>
       </div>
@@ -1152,17 +1323,38 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
   .work { min-width: 0; min-height: 0; height: 100%; }
   .split {
-    position: relative; display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
-    gap: 8px; height: 100%; min-height: 0; padding: 8px; box-sizing: border-box; align-items: stretch; overflow: hidden;
+    position: relative; display: grid; 
+    grid-template-columns: calc(var(--split-pos) * 1%) 4px calc((100 - var(--split-pos)) * 1%);
+    --split-pos: 66.67;
+    height: 100%; min-height: 0; padding: 8px 8px 8px 8px; box-sizing: border-box; align-items: stretch; overflow: hidden;
   }
   @media (max-width: 900px) {
     .main { --sidebar-w: 56px; }
-    .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 55%) minmax(0, 45%); }
+    .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 55%) 4px minmax(0, 45%); }
   }
 
   /* Canvas viewport + map */
-  .right { position: relative; display: flex; min-width: 300px; min-height: 0; height: 100%; overflow: hidden; background: #0f1216; }
+  .canvas-area { position: relative; display: flex; min-height: 0; height: 100%; overflow: hidden; }
+  .map-area { position: relative; display: flex; min-width: 300px; min-height: 0; height: 100%; overflow: hidden; background: #0f1216; }
   .map  { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; }
+  
+  /* Splitter */
+  .splitter {
+    background: var(--border); cursor: col-resize; position: relative;
+    transition: background-color 0.15s ease;
+  }
+  .splitter:hover { background: var(--accent); }
+  .splitter::after {
+    content: ''; position: absolute; top: 50%; left: 50%; 
+    transform: translate(-50%, -50%);
+    width: 3px; height: 20px; background: var(--text);
+    opacity: 0.3; border-radius: 2px;
+  }
+  .splitter:hover::after { opacity: 0.6; }
+  
+  @media (max-width: 900px) {
+    .splitter { cursor: row-resize; }
+  }
 
   .edges-overlay { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
   .cable { fill: none; stroke: #9ad; stroke-width: 2.25; opacity: 0.95; }
