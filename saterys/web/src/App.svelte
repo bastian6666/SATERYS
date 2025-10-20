@@ -289,6 +289,8 @@
   }
 
   // ----- Resizable split panel -----
+  const MIN_SPLIT_POSITION = 25; // minimum percentage for canvas area
+  const MAX_SPLIT_POSITION = 75; // maximum percentage for canvas area
   let splitPosition = 66.67; // percentage, canvas takes 2/3 initially
   let isDragging = false;
 
@@ -302,11 +304,9 @@
   }
 
   function handleDrag(e: MouseEvent | TouchEvent) {
-    if (!isDragging) return;
-    const workArea = document.querySelector('.split') as HTMLElement;
-    if (!workArea) return;
+    if (!isDragging || !canvasWrapEl) return;
     
-    const rect = workArea.getBoundingClientRect();
+    const rect = canvasWrapEl.getBoundingClientRect();
     
     // Get position from mouse or touch event
     let clientX: number;
@@ -317,7 +317,7 @@
     }
     
     const percentage = ((clientX - rect.left) / rect.width) * 100;
-    splitPosition = Math.max(25, Math.min(75, percentage)); // constrain between 25-75%
+    splitPosition = Math.max(MIN_SPLIT_POSITION, Math.min(MAX_SPLIT_POSITION, percentage));
     
     // Trigger map resize after a short delay
     requestAnimationFrame(() => map?.invalidateSize());
@@ -454,15 +454,12 @@
       
       // Show a brief notification
       pushLog(n.id, true, `📍 Zoomed to image bounds: ${layerName}`);
-      if (!showLogs) {
+      if (!showLogs && mapEl) {
         // Flash a subtle indication that zoom occurred
-        const mapEl = document.querySelector('.map');
-        if (mapEl) {
-          (mapEl as HTMLElement).style.boxShadow = '0 0 0 3px rgba(96, 165, 250, 0.5)';
-          setTimeout(() => {
-            (mapEl as HTMLElement).style.boxShadow = '';
-          }, 1000);
-        }
+        mapEl.style.boxShadow = '0 0 0 3px rgba(96, 165, 250, 0.5)';
+        setTimeout(() => {
+          if (mapEl) mapEl.style.boxShadow = '';
+        }, 1000);
       }
     } catch (e) {
       console.warn('Failed to get bounds for auto-zoom:', e);
@@ -642,8 +639,8 @@ function importWorkflow(data: WorkflowExport) {
     nodes = data.nodes || [];
     edges = data.edges || [];
     splitPosition = data.splitPosition || 66.67;
-    nextNodeIndex = data.nextNodeIndex || (Math.max(...nodes.map(n => parseInt(n.id.slice(1)) || 0)) + 1);
-    nextEdgeId = data.nextEdgeId || (Math.max(...edges.map(e => parseInt(e.id.slice(1)) || 0)) + 1);
+    nextNodeIndex = data.nextNodeIndex || (nodes.length > 0 ? Math.max(...nodes.map(n => parseInt(n.id.slice(1)) || 0)) + 1 : 1);
+    nextEdgeId = data.nextEdgeId || (edges.length > 0 ? Math.max(...edges.map(e => parseInt(e.id.slice(1)) || 0)) + 1 : 1);
     
     // Rebuild argsText
     argsText = {};
@@ -662,13 +659,17 @@ function importWorkflow(data: WorkflowExport) {
   }
 }
 
+function generateWorkflowFilename(): string {
+  return `workflow-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+}
+
 function saveWorkflowToFile() {
   const workflow = exportWorkflow();
   const blob = new Blob([JSON.stringify(workflow, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `workflow-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.json`;
+  a.download = generateWorkflowFilename();
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
