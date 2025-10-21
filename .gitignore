@@ -45,6 +45,10 @@ __pycache__/
 build/
 dist/
 
+# SQLite database files
+*.sqlite
+*.db
+
 # Node
 web/node_modules/
 
