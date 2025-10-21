@@ -285,6 +285,39 @@
     canvasRO.observe(canvasWrapEl);
   }
 
+  // ----- Resizable split between canvas and map -----
+  let splitPercent = 60; // default canvas takes 60% width
+  let isDraggingSplitter = false;
+
+  function startDrag(e: MouseEvent) {
+    isDraggingSplitter = true;
+    e.preventDefault();
+  }
+
+  function handleDrag(e: MouseEvent) {
+    if (!isDraggingSplitter) return;
+    if (!canvasWrapEl || !canvasWrapEl.parentElement) return;
+    
+    const container = canvasWrapEl.parentElement;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const percent = Math.max(20, Math.min(80, (x / rect.width) * 100));
+    splitPercent = percent;
+  }
+
+  function stopDrag() {
+    isDraggingSplitter = false;
+  }
+
+  onMount(() => {
+    window.addEventListener('mousemove', handleDrag);
+    window.addEventListener('mouseup', stopDrag);
+    return () => {
+      window.removeEventListener('mousemove', handleDrag);
+      window.removeEventListener('mouseup', stopDrag);
+    };
+  });
+
   // ----- Leaflet map (always-on) -----
   let map: L.Map | null = null;
   let overlayLayers: Map<string, L.TileLayer> = new Map();
@@ -392,10 +425,15 @@
     newLayer.addTo(map);
     layerControl.addOverlay(newLayer, layerName);
 
-    const b = await fetch(`/preview/bounds/${id}`).then(r => r.json());
-    const [west, south, east, north] = b.bounds;
-    const bounds = L.latLngBounds([south, west], [north, east]);
-    map.fitBounds(bounds, { padding: [10, 10] });
+    // Fetch bounds and zoom to them immediately
+    try {
+      const b = await fetch(`/preview/bounds/${id}`).then(r => r.json());
+      const [west, south, east, north] = b.bounds;
+      const bounds = L.latLngBounds([south, west], [north, east]);
+      map.fitBounds(bounds, { padding: [10, 10], animate: true });
+    } catch (e) {
+      console.warn('Failed to get bounds for zoom:', e);
+    }
   }
 
   function clearOverlayLayers() {
@@ -663,6 +701,101 @@ async function runNow(jobId: string) {
 // kick once on load
 onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
+// ----- Save and Load Workflow -----
+function saveWorkflow() {
+  const workflow = {
+    nodes: nodes.map(n => ({
+      id: n.id,
+      position: n.position,
+      label: n.label,
+      type: n.type,
+      args: n.args
+    })),
+    edges: edges.map(e => ({
+      id: e.id,
+      source: e.source,
+      target: e.target
+    }))
+  };
+  
+  const json = JSON.stringify(workflow, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `saterys-workflow-${new Date().toISOString().replace(/:/g, '-').split('.')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadWorkflow() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  input.onchange = async (e) => {
+    const file = (e.target as HTMLInputElement).files?.[0];
+    if (!file) return;
+    
+    try {
+      const text = await file.text();
+      const workflow = JSON.parse(text);
+      
+      if (!workflow.nodes || !Array.isArray(workflow.nodes)) {
+        alert('Invalid workflow file: missing nodes array');
+        return;
+      }
+      
+      // Clear existing workflow
+      nodes = [];
+      edges = [];
+      argsText = {};
+      clearOverlayLayers();
+      
+      // Load nodes
+      nodes = workflow.nodes.map((n: any) => ({
+        id: n.id || `n${nextNodeIndex++}`,
+        position: n.position || { x: 100, y: 100 },
+        label: n.label || 'unknown',
+        type: n.type || 'hello',
+        args: n.args || {}
+      }));
+      
+      // Update nextNodeIndex to avoid conflicts
+      const maxIndex = Math.max(...nodes.map(n => {
+        const match = n.id.match(/^n(\d+)$/);
+        return match ? parseInt(match[1]) : 0;
+      }), 0);
+      nextNodeIndex = maxIndex + 1;
+      
+      // Load edges
+      if (workflow.edges && Array.isArray(workflow.edges)) {
+        edges = workflow.edges.map((e: any) => ({
+          id: e.id || `e${nextEdgeId++}`,
+          source: e.source,
+          target: e.target
+        }));
+        
+        // Update nextEdgeId
+        const maxEdgeIndex = Math.max(...edges.map(e => {
+          const match = e.id.match(/^e(\d+)$/);
+          return match ? parseInt(match[1]) : 0;
+        }), 0);
+        nextEdgeId = maxEdgeIndex + 1;
+      }
+      
+      // Initialize argsText for all nodes
+      for (const n of nodes) {
+        argsText[n.id] = JSON.stringify(n.args || {}, null, 2);
+      }
+      
+      pushLog('system', true, `Loaded workflow with ${nodes.length} nodes and ${edges.length} edges`);
+      showLogs = true;
+    } catch (err) {
+      alert(`Failed to load workflow: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  input.click();
+}
 
 </script>
 
@@ -687,6 +820,14 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
       <button class="icon-btn" title={running ? 'Running…' : 'Run pipeline'} on:click={runPipeline} disabled={running}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
         <span>Run</span>
+      </button>
+      <button class="icon-btn" title="Save workflow" on:click={saveWorkflow}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M7 3v6h10" stroke="currentColor" stroke-width="2" fill="none"/><path d="M17 21v-8H7v8" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+        <span>Save</span>
+      </button>
+      <button class="icon-btn" title="Load workflow" on:click={loadWorkflow}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 15v4a2 2 0 002 2h14a2 2 0 002-2v-4M17 9l-5 5-5-5M12 4v10" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Load</span>
       </button>
       <button class="icon-btn" title="Schedule pipeline" on:click={openPipelineSchedule}>
       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -812,94 +953,99 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
     <!-- Work area: nodes + map -->
     <div class="work">
-      <div class="split" bind:this={canvasWrapEl}>
-        <Svelvet width={viewW} height={viewH} {theme}>
-          {#each nodes as n, i (n.id)}
-            <Node id={n.id} bind:position={nodes[i].position} width={NODE_W} height={NODE_H} let:selected let:grabHandle>
-              <div class="node" use:grabHandle aria-selected={selected ? 'true' : 'false'}>
-                <div class="node-title">{n.label}</div>
+      <div class="split-container">
+        <div class="split-left" style="width: {splitPercent}%;" bind:this={canvasWrapEl}>
+          <Svelvet width={viewW} height={viewH} {theme}>
+            {#each nodes as n, i (n.id)}
+              <Node id={n.id} bind:position={nodes[i].position} width={NODE_W} height={NODE_H} let:selected let:grabHandle>
+                <div class="node" use:grabHandle aria-selected={selected ? 'true' : 'false'}>
+                  <div class="node-title">{n.label}</div>
 
-                <!-- handles -->
-                <button class="dot in"  title="input"  on:click={() => clickInput(n.id)} />
-                <button class="dot out" title="output" on:click={() => clickOutput(n.id)} aria-pressed={pendingSource === n.id} />
+                  <!-- handles -->
+                  <button class="dot in"  title="input"  on:click={() => clickInput(n.id)} />
+                  <button class="dot out" title="output" on:click={() => clickOutput(n.id)} aria-pressed={pendingSource === n.id} />
 
-                <!-- delete -->
-                <button class="node-del" title="delete node" on:click={() => deleteNode(n.id)}>🗑</button>
+                  <!-- delete -->
+                  <button class="node-del" title="delete node" on:click={() => deleteNode(n.id)}>🗑</button>
 
-                <!-- type + args -->
-                <div class="node-config">
-                  <select bind:value={nodes[i].type} on:change={() => {
-                    const t = TYPES.find(tt => tt.name === nodes[i].type);
-                    const defaults = t?.default_args ?? {};
-                    nodes[i].args = JSON.parse(JSON.stringify(defaults));
-                    nodes[i].label = `${nodes[i].type} (${n.id})`;
-                    argsText[n.id] = JSON.stringify(nodes[i].args, null, 2);
-                  }}>
-                    {#each TYPES as t}
-                      <option value={t.name}>{t.name}</option>
-                    {/each}
-                  </select>
+                  <!-- type + args -->
+                  <div class="node-config">
+                    <select bind:value={nodes[i].type} on:change={() => {
+                      const t = TYPES.find(tt => tt.name === nodes[i].type);
+                      const defaults = t?.default_args ?? {};
+                      nodes[i].args = JSON.parse(JSON.stringify(defaults));
+                      nodes[i].label = `${nodes[i].type} (${n.id})`;
+                      argsText[n.id] = JSON.stringify(nodes[i].args, null, 2);
+                    }}>
+                      {#each TYPES as t}
+                        <option value={t.name}>{t.name}</option>
+                      {/each}
+                    </select>
 
-                  <!-- field editor (modal) -->
-                  <button class="edit-btn" on:click={() => openArgsModal(n)}>⚙</button>
+                    <!-- field editor (modal) -->
+                    <button class="edit-btn" on:click={() => openArgsModal(n)}>⚙</button>
 
-                  <!-- map preview -->
-                  <button class="preview-btn" title="Preview on map" on:click={() => previewNode(n, i)}>👁</button>
-                  <button
-                      class="runone-btn"
-                      title="Run this node only"
-                      on:click={async () => {
-                        try {
-                          // Call the same endpoint used in the pipeline, but only for this node.
-                          const data = await runNode(n, {});   // inputs can be empty for manual_labeler
-                          showLogs = true;                     // open logs drawer
-                          pushLog(n.id, !!data?.ok, data?.ok
-                            ? (data?.output?.message || 'Started')
-                            : (data?.error || 'Error'));
-                        } catch (e) {
-                          pushLog(n.id, false, `Exception: ${
-                            typeof e === 'object' && e !== null && 'message' in e
-                              ? e.message
-                              : String(e)
-                          }`);
-                          showLogs = true;
-                        }
-                      }}>
-                      ▶
-                    </button>
+                    <!-- map preview -->
+                    <button class="preview-btn" title="Preview on map" on:click={() => previewNode(n, i)}>👁</button>
+                    <button
+                        class="runone-btn"
+                        title="Run this node only"
+                        on:click={async () => {
+                          try {
+                            // Call the same endpoint used in the pipeline, but only for this node.
+                            const data = await runNode(n, {});   // inputs can be empty for manual_labeler
+                            showLogs = true;                     // open logs drawer
+                            pushLog(n.id, !!data?.ok, data?.ok
+                              ? (data?.output?.message || 'Started')
+                              : (data?.error || 'Error'));
+                          } catch (e) {
+                            pushLog(n.id, false, `Exception: ${
+                              typeof e === 'object' && e !== null && 'message' in e
+                                ? e.message
+                                : String(e)
+                            }`);
+                            showLogs = true;
+                          }
+                        }}>
+                        ▶
+                      </button>
+                  </div>
                 </div>
-              </div>
-            </Node>
-          {/each}
+              </Node>
+            {/each}
 
-          <!-- Edges overlay (fixed duplicate loop bug) -->
-          <svg class="edges-overlay" viewBox={`0 0 ${viewW} ${viewH}`} preserveAspectRatio="none">
-            {#key positionsKey}
-              <defs>
-                <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                  <path d="M 0 0 L 10 5 L 0 10 z" />
-                </marker>
-              </defs>
-              {#each edges as e (e.id)}
-                {#if nodeById(e.source) && nodeById(e.target)}
-                  {@const s = nodeByIdStrict(e.source)}
-                  {@const t = nodeByIdStrict(e.target)}
-                  <path
-                    d={`M ${rightX(s)} ${midY(s)}
-                        C ${rightX(s)+60} ${midY(s)},
-                          ${leftX(t)-60} ${midY(t)},
-                          ${leftX(t)} ${midY(t)}`}
-                    class="cable"
-                    marker-end="url(#arrow)"
-                  />
-                {/if}
-              {/each}
-            {/key}
-          </svg>
-        </Svelvet>
-
+            <!-- Edges overlay (fixed duplicate loop bug) -->
+            <svg class="edges-overlay" viewBox={`0 0 ${viewW} ${viewH}`} preserveAspectRatio="none">
+              {#key positionsKey}
+                <defs>
+                  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" />
+                  </marker>
+                </defs>
+                {#each edges as e (e.id)}
+                  {#if nodeById(e.source) && nodeById(e.target)}
+                    {@const s = nodeByIdStrict(e.source)}
+                    {@const t = nodeByIdStrict(e.target)}
+                    <path
+                      d={`M ${rightX(s)} ${midY(s)}
+                          C ${rightX(s)+60} ${midY(s)},
+                            ${leftX(t)-60} ${midY(t)},
+                            ${leftX(t)} ${midY(t)}`}
+                      class="cable"
+                      marker-end="url(#arrow)"
+                    />
+                  {/if}
+                {/each}
+              {/key}
+            </svg>
+          </Svelvet>
+        </div>
+        
+        <!-- Resizable splitter -->
+        <div class="split-handle" on:mousedown={startDrag} role="separator" aria-orientation="vertical" aria-label="Resize split"></div>
+        
         <!-- RIGHT: map viewer -->
-        <div class="right" bind:this={mapContainerEl}>
+        <div class="split-right" bind:this={mapContainerEl}>
           <div bind:this={mapEl} class="map"></div>
         </div>
       </div>
@@ -1151,17 +1297,31 @@ onMount(async () => { await refreshSchedules().catch(()=>{}); });
   .pending { padding:4px 8px; border:1px dashed var(--border); border-radius:8px; margin-top:8px; }
 
   .work { min-width: 0; min-height: 0; height: 100%; }
-  .split {
-    position: relative; display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
-    gap: 8px; height: 100%; min-height: 0; padding: 8px; box-sizing: border-box; align-items: stretch; overflow: hidden;
+  .split-container {
+    position: relative; display: flex; height: 100%; min-height: 0; padding: 8px; box-sizing: border-box; overflow: hidden;
+  }
+  .split-left {
+    position: relative; min-width: 20%; max-width: 80%; height: 100%; overflow: hidden;
+  }
+  .split-handle {
+    width: 8px; background: var(--border); cursor: col-resize; position: relative; flex-shrink: 0;
+    transition: background 0.15s ease;
+  }
+  .split-handle:hover {
+    background: var(--accent);
+  }
+  .split-right {
+    position: relative; display: flex; flex: 1; min-width: 20%; min-height: 0; height: 100%; overflow: hidden; background: #0f1216;
   }
   @media (max-width: 900px) {
     .main { --sidebar-w: 56px; }
-    .split { grid-template-columns: 1fr; grid-template-rows: minmax(0, 55%) minmax(0, 45%); }
+    .split-container { flex-direction: column; }
+    .split-left { width: 100% !important; height: 55%; max-width: 100%; }
+    .split-handle { width: 100%; height: 8px; cursor: row-resize; }
+    .split-right { width: 100%; height: 45%; }
   }
 
   /* Canvas viewport + map */
-  .right { position: relative; display: flex; min-width: 300px; min-height: 0; height: 100%; overflow: hidden; background: #0f1216; }
   .map  { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; }
 
   .edges-overlay { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
