@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: saterys
-Version: 0.3.9
+Version: 0.4
 Summary: Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS
 Author-email: Sebastian Sanchez Bernal <bastian@example.com>
 License: MIT
@@ -32,6 +32,7 @@ Requires-Dist: APScheduler>=3.10.4
 Requires-Dist: SQLAlchemy>=2.0
 Requires-Dist: pytz>=2024.1
 Requires-Dist: tzlocal>=5.2
+Requires-Dist: openai>=1.0.0
 Dynamic: license-file
 
 <div align="center">
@@ -92,7 +93,8 @@ Dynamic: license-file
 - Interactive map preview with Leaflet and tile-based raster visualization via [rio-tiler](https://github.com/cogeotiff/rio-tiler)
 - Coordinate system handling and automatic reprojection
 - Raster statistics, band math, and index calculation (NDVI, NDWI, PCA, etc.)
-- Vector data support (GeoJSON, SHP, GPKG) for overlays and analysis
+- **NEW:** Full vector data support (GeoJSON, SHP, GPKG) with interactive map overlays
+- **NEW:** Create and visualize points, lines, and polygons directly on the map
 
 </td>
 <td>
@@ -122,6 +124,13 @@ Dynamic: license-file
 - Real-time workflow editing and execution feedback
 - Integrated documentation and example workflows
 - User authentication and role-based access (optional)
+
+### 🤖 **AI-Powered Workflow Builder** (NEW!)
+- Built-in AI chat assistant powered by OpenAI GPT models
+- Natural language workflow creation and modification
+- Intelligent node suggestions and connections
+- Context-aware help and guidance
+- Auto-generate complete pipelines from descriptions
 
 </td>
 </tr>
@@ -237,6 +246,8 @@ def process_raster(input_raster):
 | 🌿 **raster.ndvi** | Calculate NDVI | Vegetation analysis |
 | 🌊 **raster.ndwi** | Calculate NDWI | Water body detection |
 | 📊 **raster.pca** | Principal Component Analysis | Dimensionality reduction |
+| 📍 **vector.input** | Load vector data (GeoJSON/SHP/GPKG) | Vector data ingestion |
+| ✏️ **vector.create** | Create points, lines, polygons | Feature creation |
 | ➕ **sum** | Sum numeric values | Basic arithmetic |
 | 👋 **hello** | Hello world example | Testing/demos |
 | 📝 **script** | Custom Python code | Flexible processing |
@@ -265,8 +276,60 @@ POST /preview/register
   "path": "/path/to/file.tif"
 }
 
+# Register vector data for preview
+POST /preview/register_vector
+{
+  "id": "my-vector",
+  "geojson": {...},
+  "bounds": [minx, miny, maxx, maxy]
+}
+
 # Get map tiles
 GET /preview/tile/{id}/{z}/{x}/{y}.png
+
+# Get vector GeoJSON
+GET /preview/vector/{id}
+
+# AI Chat
+POST /llm/chat
+{
+  "message": "Create a workflow to calculate NDVI",
+  "context": {"nodes": [...], "edges": [...]}
+}
+```
+
+### Using the AI Assistant
+
+SATERYS includes an AI-powered chat assistant to help you build workflows:
+
+1. **Set your OpenAI API key:**
+   ```bash
+   export OPENAI_API_KEY="sk-your-key-here"
+   ```
+
+2. **Start SATERYS:**
+   ```bash
+   saterys
+   ```
+
+3. **Open the AI Chat panel** by clicking the "AI Chat" button in the top toolbar
+
+4. **Ask the AI to help you:**
+   - "Create a workflow to calculate NDVI from a raster"
+   - "Add a vector polygon to mark my study area"
+   - "How do I calculate water indices?"
+   - "Build a complete NDVI analysis pipeline"
+
+The AI assistant has full context of your workflow and can:
+- Create new nodes with proper configuration
+- Connect nodes automatically
+- Modify existing nodes
+- Answer questions about geospatial analysis
+- Generate complete multi-node workflows
+
+**Note:** The AI chat requires an active OpenAI API key. The default model is `gpt-4o-mini` for cost-effectiveness. You can change this with:
+```bash
+export SATERYS_LLM_MODEL="gpt-4"
 ```
 
 ---
@@ -380,6 +443,10 @@ export RASTER_CACHE=./my_cache
 
 # Development frontend origin (for CORS)
 export SATERYS_DEV_ORIGIN=http://localhost:5173
+
+# AI Chat (OpenAI)
+export OPENAI_API_KEY=sk-your-key-here
+export SATERYS_LLM_MODEL=gpt-4o-mini  # or gpt-4, gpt-3.5-turbo, etc.
 ```
 
 ### Docker Usage

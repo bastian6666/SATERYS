@@ -1,0 +1,29 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "position": {
+        "x": 120,
+        "y": 140
+      },
+      "label": "San Francisco Point",
+      "type": "vector.create",
+      "args": {
+        "type": "point",
+        "coordinates": [
+          [
+            -122.4194,
+            37.7749
+          ]
+        ],
+        "name": "San Francisco",
+        "properties": {
+          "city": "San Francisco",
+          "state": "California",
+          "population": 873965
+        }
+      }
+    }
+  ],
+  "edges": []
+}
