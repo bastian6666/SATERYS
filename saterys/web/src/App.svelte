@@ -181,6 +181,165 @@
   // sidebar collapse
   let sidebarCollapsed = false;
 
+  // ----- LLM Chat -----
+  type ChatMessage = { role: 'user' | 'assistant'; content: string; timestamp: string };
+  let showChat = false;
+  let chatMessages: ChatMessage[] = [];
+  let chatInput = '';
+  let chatLoading = false;
+
+  async function sendChatMessage() {
+    if (!chatInput.trim() || chatLoading) return;
+    
+    const userMessage = chatInput.trim();
+    chatInput = '';
+    chatLoading = true;
+    
+    // Add user message to UI
+    chatMessages = [...chatMessages, {
+      role: 'user',
+      content: userMessage,
+      timestamp: new Date().toISOString()
+    }];
+    
+    // Scroll to bottom
+    requestAnimationFrame(() => {
+      const el = document.querySelector('.chat-body');
+      if (el) (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight;
+    });
+    
+    try {
+      // Build context from current workflow
+      const context = {
+        nodes: nodes.map(n => ({
+          id: n.id,
+          type: n.type,
+          label: n.label,
+          args: n.args
+        })),
+        edges: edges.map(e => ({
+          source: e.source,
+          target: e.target
+        }))
+      };
+      
+      const res = await fetch('/llm/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage, context })
+      });
+      
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(error.detail || `HTTP ${res.status}`);
+      }
+      
+      const data = await res.json();
+      
+      // Add assistant message to UI
+      chatMessages = [...chatMessages, {
+        role: 'assistant',
+        content: data.message || 'Action completed.',
+        timestamp: data.timestamp || new Date().toISOString()
+      }];
+      
+      // Handle actions
+      if (data.action === 'create_node' || data.action === 'create_workflow') {
+        if (data.nodes && Array.isArray(data.nodes)) {
+          for (const nodeSpec of data.nodes) {
+            const id = `n${nextNodeIndex++}`;
+            const x = nodeSpec.position?.x || (120 + (nodes.length % 6) * 260);
+            const y = nodeSpec.position?.y || (140 + Math.floor(nodes.length / 6) * 140);
+            const label = nodeSpec.label || `${nodeSpec.type} (${id})`;
+            
+            nodes = [...nodes, {
+              id,
+              position: { x, y },
+              label,
+              type: nodeSpec.type,
+              args: nodeSpec.args || {}
+            }];
+            argsText[id] = JSON.stringify(nodeSpec.args || {}, null, 2);
+          }
+          
+          pushLog('llm', true, `Created ${data.nodes.length} node(s) via LLM`);
+          showLogs = true;
+        }
+        
+        if (data.edges && Array.isArray(data.edges)) {
+          // Map node indices or IDs to actual node IDs
+          for (const edgeSpec of data.edges) {
+            // Try to find nodes by index or id
+            let sourceNode, targetNode;
+            
+            if (typeof edgeSpec.source === 'number') {
+              sourceNode = nodes[edgeSpec.source];
+            } else {
+              sourceNode = nodes.find(n => n.id === edgeSpec.source);
+            }
+            
+            if (typeof edgeSpec.target === 'number') {
+              targetNode = nodes[edgeSpec.target];
+            } else {
+              targetNode = nodes.find(n => n.id === edgeSpec.target);
+            }
+            
+            if (sourceNode && targetNode) {
+              addEdge(sourceNode.id, targetNode.id);
+            }
+          }
+        }
+      }
+      
+      // Scroll chat to bottom
+      requestAnimationFrame(() => {
+        const el = document.querySelector('.chat-body');
+        if (el) (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight;
+      });
+      
+    } catch (e: any) {
+      chatMessages = [...chatMessages, {
+        role: 'assistant',
+        content: `Error: ${e?.message || e}`,
+        timestamp: new Date().toISOString()
+      }];
+    } finally {
+      chatLoading = false;
+    }
+  }
+
+  async function loadChatHistory() {
+    try {
+      const res = await fetch('/llm/history');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.messages && Array.isArray(data.messages)) {
+          chatMessages = data.messages.map((m: any) => ({
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp
+          }));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load chat history:', e);
+    }
+  }
+
+  async function clearChatHistory() {
+    try {
+      await fetch('/llm/history', { method: 'DELETE' });
+      chatMessages = [];
+    } catch (e) {
+      console.warn('Failed to clear chat history:', e);
+    }
+  }
+
+  // Load chat history on mount
+  onMount(async () => {
+    await loadChatHistory().catch(() => {});
+  });
+
   function pushLog(nodeId: string, ok: boolean, text: string) {
     logs = [...logs, { nodeId, ok, text }];
     if (showLogs) requestAnimationFrame(() => {
@@ -929,6 +1088,10 @@ function loadWorkflow() {
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 5h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zm2 4l3 3-3 3m5 0h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span>Logs</span>
       </button>
+      <button class="icon-btn" title="Toggle AI Chat" on:click={() => showChat = !showChat}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>AI Chat</span>
+      </button>
       <button class="icon-btn" title="Clear map layers" on:click={clearOverlayLayers} disabled={overlayLayers.size === 0}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l9 5-9 5-9-5 9-5zm0 8l9 5-9 5-9-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round"/></svg>
         <span>Layers</span>
@@ -1257,7 +1420,7 @@ function loadWorkflow() {
 
 
   <!-- Logs Drawer -->
-  <div class="logs-drawer" data-open={showLogs ? 'true' : 'false'}>
+  <div class="logs-drawer" data-open={showLogs ? 'true' : 'false'} style="bottom: {showChat ? '45dvh' : '0'};">
     <div class="logs-header">
       <div class="logs-title">
         <svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 5h16a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V7a2 2 0 012-2zm2 4l3 3-3 3m5 0h5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1289,6 +1452,74 @@ function loadWorkflow() {
           {/each}
         </ul>
       {/if}
+    </div>
+  </div>
+
+  <!-- AI Chat Drawer -->
+  <div class="chat-drawer" data-open={showChat ? 'true' : 'false'}>
+    <div class="chat-header">
+      <div class="chat-title">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>AI Assistant</span>
+      </div>
+      <div class="chat-actions">
+        <button class="icon-btn" title="Clear history" on:click={clearChatHistory}>
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M3 6h18M9 6v12m6-12v12M5 6l1-3h12l1 3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        </button>
+        <button class="icon-btn" title="Close" on:click={() => showChat = false}>
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 6l12 12M6 18L18 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="chat-body">
+      {#if chatMessages.length === 0}
+        <div class="muted small" style="padding: 20px; text-align: center;">
+          <p>👋 Hi! I'm your AI assistant for SATERYS.</p>
+          <p>I can help you:</p>
+          <ul style="list-style: none; padding: 0;">
+            <li>✨ Create new nodes and workflows</li>
+            <li>🔧 Modify existing nodes</li>
+            <li>💡 Answer questions about geospatial analysis</li>
+            <li>🗺️ Build complex pipelines from descriptions</li>
+          </ul>
+          <p style="margin-top: 10px;"><b>Try asking:</b> "Create a workflow to calculate NDVI from a raster"</p>
+        </div>
+      {:else}
+        <div class="chat-messages">
+          {#each chatMessages as msg, k (k)}
+            <div class="chat-message" data-role={msg.role}>
+              <div class="chat-message-header">
+                <span class="chat-role">{msg.role === 'user' ? '👤 You' : '🤖 AI'}</span>
+                <span class="chat-time">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+              </div>
+              <div class="chat-content">{msg.content}</div>
+            </div>
+          {/each}
+          {#if chatLoading}
+            <div class="chat-message" data-role="assistant">
+              <div class="chat-message-header">
+                <span class="chat-role">🤖 AI</span>
+              </div>
+              <div class="chat-content">
+                <span class="typing-indicator">Thinking...</span>
+              </div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+    <div class="chat-input-area">
+      <form on:submit|preventDefault={sendChatMessage}>
+        <input
+          type="text"
+          bind:value={chatInput}
+          placeholder="Ask AI to create nodes, modify workflow, or answer questions..."
+          disabled={chatLoading}
+        />
+        <button type="submit" disabled={chatLoading || !chatInput.trim()}>
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </form>
     </div>
   </div>
 </div>
@@ -1496,15 +1727,43 @@ function loadWorkflow() {
   .btn.primary { border-color:#3b82f6; }
 
   /* Logs Drawer */
-  .logs-drawer { position: fixed; left: 0; right: 0; bottom: 0; transform: translateY(100%); transition: transform .18s ease; background: #0d1117; border-top: 1px solid var(--border); color: #dbe2ea; z-index: 1002; max-height: 45dvh; display: flex; flex-direction: column; }
+  .logs-drawer { position: fixed; left: 0; right: 0; bottom: 0; transform: translateY(100%); transition: transform .18s ease, bottom .18s ease; background: #0d1117; border-top: 1px solid var(--border); color: #dbe2ea; z-index: 1002; max-height: 45dvh; display: flex; flex-direction: column; }
   .logs-drawer[data-open="true"] { transform: translateY(0); }
   .logs-header { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#0f141b; }
   .logs-title { display:inline-flex; align-items:center; gap:8px; font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:#aab3bf; }
   .logs-actions { display:inline-flex; gap:6px; }
-  .logs-body { overflow:auto; padding:10px; font-size:13px; line-height:1.35; }
+  .logs-body { overflow:auto; padding:10px; font-size:13px; line-height:1.35; flex: 1; }
   .logs-body ul { list-style: none; padding: 0; margin: 0; }
   .logs-body li { padding: 4px 0; border-bottom: 1px dashed #222a33; }
   .logs-body li.ok { color: #d7f5dd; }
   .logs-body li.err { color: #ffd6d6; }
   .logs-body code { background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 999px; margin-right: 6px; }
+
+  /* AI Chat Drawer */
+  .chat-drawer { position: fixed; left: 0; right: 0; bottom: 0; transform: translateY(100%); transition: transform .18s ease; background: #0d1117; border-top: 1px solid var(--border); color: #dbe2ea; z-index: 1001; height: 45dvh; display: flex; flex-direction: column; }
+  .chat-drawer[data-open="true"] { transform: translateY(0); }
+  .chat-header { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:#0f141b; border-bottom: 1px solid var(--border); }
+  .chat-title { display:inline-flex; align-items:center; gap:8px; font-size:12px; text-transform:uppercase; letter-spacing:.7px; color:#aab3bf; }
+  .chat-actions { display:inline-flex; gap:6px; }
+  .chat-body { overflow:auto; padding:10px; font-size:13px; line-height:1.5; flex: 1; }
+  
+  .chat-messages { display: flex; flex-direction: column; gap: 12px; }
+  .chat-message { padding: 10px; border-radius: 8px; background: rgba(255,255,255,0.03); }
+  .chat-message[data-role="user"] { background: rgba(96,165,250,0.08); border-left: 3px solid #60a5fa; }
+  .chat-message[data-role="assistant"] { background: rgba(168,139,250,0.08); border-left: 3px solid #a78bfa; }
+  .chat-message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .chat-role { font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #aab3bf; }
+  .chat-time { font-size: 11px; color: #6b7280; }
+  .chat-content { white-space: pre-wrap; word-break: break-word; }
+  
+  .typing-indicator { display: inline-block; animation: pulse 1.5s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+  
+  .chat-input-area { padding: 10px; background: #0f141b; border-top: 1px solid var(--border); }
+  .chat-input-area form { display: flex; gap: 8px; }
+  .chat-input-area input { flex: 1; padding: 8px 12px; background: #0b0f14; color: #e5e7eb; border: 1px solid var(--border); border-radius: 8px; font-size: 13px; }
+  .chat-input-area input:focus { outline: none; border-color: #60a5fa; }
+  .chat-input-area button { padding: 8px 12px; background: #3b82f6; color: white; border: none; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .chat-input-area button:hover:not(:disabled) { background: #2563eb; }
+  .chat-input-area button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

@@ -10,6 +10,7 @@ import importlib.util
 import os
 import sys
 from .scheduling import pipeline_router, scheduler
+from .llm_chat import llm_router
 
 # ------------------------------------------------------------------------------
 # FastAPI app + CORS
@@ -18,6 +19,9 @@ app = FastAPI()
 
 # Register the pipeline scheduling API
 app.include_router(pipeline_router)
+
+# Register the LLM chat API
+app.include_router(llm_router)
 
 app.add_middleware(
     CORSMiddleware,
