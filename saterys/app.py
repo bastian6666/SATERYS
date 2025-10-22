@@ -91,6 +91,20 @@ def run_node(p: RunPayload):
         return {"ok": False, "error": str(e)}
 
 # ------------------------------------------------------------------------------
+# LLM Chat endpoint for node generation
+# ------------------------------------------------------------------------------
+class LLMChatPayload(BaseModel):
+    prompt: str
+
+@app.post("/llm/generate_nodes")
+async def llm_generate_nodes(p: LLMChatPayload):
+    """Generate new workflow nodes based on natural language prompt."""
+    from .llm_service import generate_nodes_from_prompt
+    
+    result = await generate_nodes_from_prompt(p.prompt, PLUGINS)
+    return result
+
+# ------------------------------------------------------------------------------
 # Raster preview endpoints (Leaflet tiles) — Py3.7 compatible
 # Requires: pip install "rio-tiler<6" numpy
 # ------------------------------------------------------------------------------

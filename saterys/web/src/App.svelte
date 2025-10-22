@@ -701,6 +701,96 @@ async function runNow(jobId: string) {
 // kick once on load
 onMount(async () => { await refreshSchedules().catch(()=>{}); });
 
+// ===== LLM Chat for Node Generation =====
+let showLLMChat = false;
+let llmPrompt = '';
+let llmGenerating = false;
+let llmError = '';
+let llmExplanation = '';
+
+function openLLMChat() {
+  showLLMChat = true;
+  llmPrompt = '';
+  llmError = '';
+  llmExplanation = '';
+}
+
+async function generateNodesFromPrompt() {
+  if (!llmPrompt.trim()) {
+    llmError = 'Please enter a prompt';
+    return;
+  }
+  
+  llmGenerating = true;
+  llmError = '';
+  llmExplanation = '';
+  
+  try {
+    const res = await fetch('/llm/generate_nodes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: llmPrompt })
+    });
+    
+    const data = await res.json();
+    
+    if (!data.ok) {
+      llmError = data.error || 'Failed to generate nodes';
+      return;
+    }
+    
+    llmExplanation = data.explanation || '';
+    
+    // Add generated nodes to canvas
+    if (data.nodes && Array.isArray(data.nodes)) {
+      for (const nodeData of data.nodes) {
+        const id = `n${nextNodeIndex++}`;
+        const label = nodeData.label || `${nodeData.type} (${id})`;
+        
+        nodes = [...nodes, {
+          id,
+          position: nodeData.position || { x: 300 + nodes.length * 260, y: 200 },
+          label,
+          type: nodeData.type,
+          args: nodeData.args || {}
+        }];
+        
+        argsText[id] = JSON.stringify(nodeData.args || {}, null, 2);
+      }
+      
+      pushLog('llm', true, `✨ Generated ${data.nodes.length} new node(s)`);
+      showLogs = true;
+    }
+    
+    // Add existing nodes that should be used
+    if (data.existing_nodes && Array.isArray(data.existing_nodes)) {
+      for (const nodeInfo of data.existing_nodes) {
+        const id = `n${nextNodeIndex++}`;
+        const nodeType = TYPES.find(t => t.name === nodeInfo.type) || TYPES[0];
+        const defaults = JSON.parse(JSON.stringify(nodeType.default_args || {}));
+        const label = `${nodeInfo.type} (${id})`;
+        
+        nodes = [...nodes, {
+          id,
+          position: { x: 100 + nodes.length * 260, y: 100 },
+          label,
+          type: nodeInfo.type,
+          args: defaults
+        }];
+        
+        argsText[id] = JSON.stringify(defaults, null, 2);
+      }
+      
+      pushLog('llm', true, `Added ${data.existing_nodes.length} existing node(s) to workflow`);
+    }
+    
+  } catch (e: any) {
+    llmError = `Error: ${e?.message || e}`;
+  } finally {
+    llmGenerating = false;
+  }
+}
+
 // ----- Save and Load Workflow -----
 function saveWorkflow() {
   const workflow = {
@@ -846,6 +936,10 @@ function loadWorkflow() {
       <button class="icon-btn" title="Toggle theme" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
         <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
+      </button>
+      <button class="icon-btn" title="AI Chat - Generate nodes from prompt" on:click={openLLMChat}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M8 10h8M8 14h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>AI Chat</span>
       </button>
       <button class="icon-btn primary" title="Add node" on:click={addNode}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
@@ -1166,6 +1260,64 @@ function loadWorkflow() {
 
 
 
+  <!-- LLM Chat Modal -->
+  {#if showLLMChat}
+    <div class="modal-backdrop" on:click={() => showLLMChat = false}></div>
+    <div class="modal llm-modal" on:click|stopPropagation>
+      <div class="modal-head">
+        <h3>✨ AI Workflow Assistant</h3>
+        <button class="icon-btn" title="Close" on:click={() => showLLMChat = false}>
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 6l12 12M6 18L18 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="llm-content">
+        <div class="form-row">
+          <label>Describe what workflow you want to create:</label>
+          <textarea 
+            rows="4" 
+            bind:value={llmPrompt} 
+            placeholder="Example: Create a workflow to detect buildings using satellite imagery"
+            disabled={llmGenerating}
+          ></textarea>
+          <small class="muted">
+            The AI will analyze existing nodes and create new ones if needed.
+            Examples: "detect water bodies", "calculate vegetation index", "classify land cover"
+          </small>
+        </div>
+
+        {#if llmError}
+          <div class="llm-error">
+            <svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none"/><path d="M12 8v4M12 16h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            {llmError}
+          </div>
+        {/if}
+
+        {#if llmExplanation}
+          <div class="llm-explanation">
+            <div class="explanation-title">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" fill="currentColor"/></svg>
+              Generated Workflow Plan
+            </div>
+            <div class="explanation-text">{llmExplanation}</div>
+          </div>
+        {/if}
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn" on:click={() => showLLMChat = false} disabled={llmGenerating}>Cancel</button>
+        <button class="btn primary" on:click={generateNodesFromPrompt} disabled={llmGenerating || !llmPrompt.trim()}>
+          {#if llmGenerating}
+            <span class="spinner"></span>
+            Generating...
+          {:else}
+            ✨ Generate Workflow
+          {/if}
+        </button>
+      </div>
+    </div>
+  {/if}
+
   <!-- Logs Drawer -->
   <div class="logs-drawer" data-open={showLogs ? 'true' : 'false'}>
     <div class="logs-header">
@@ -1417,4 +1569,51 @@ function loadWorkflow() {
   .logs-body li.ok { color: #d7f5dd; }
   .logs-body li.err { color: #ffd6d6; }
   .logs-body code { background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 999px; margin-right: 6px; }
+
+  /* LLM Chat Modal */
+  .llm-modal { width: 720px; max-width: 90vw; }
+  .llm-content { display: flex; flex-direction: column; gap: 12px; max-height: 60vh; overflow-y: auto; padding: 6px 2px; }
+  
+  .llm-error {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; border-radius: 8px;
+    background: rgba(255, 100, 100, 0.1);
+    border: 1px solid rgba(255, 100, 100, 0.3);
+    color: #ffb4b4;
+    font-size: 13px;
+  }
+  
+  .llm-explanation {
+    padding: 12px;
+    background: rgba(96, 165, 250, 0.08);
+    border: 1px solid rgba(96, 165, 250, 0.2);
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  
+  .explanation-title {
+    display: flex; align-items: center; gap: 8px;
+    font-weight: 600; color: #60a5fa;
+    margin-bottom: 8px;
+  }
+  
+  .explanation-text {
+    color: #cbd5e1;
+    white-space: pre-wrap;
+  }
+  
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-right: 6px;
+  }
+  
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
 </style>
