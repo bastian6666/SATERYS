@@ -1,0 +1,36 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "position": {
+        "x": 120,
+        "y": 140
+      },
+      "label": "Transect Line",
+      "type": "vector.create",
+      "args": {
+        "type": "line",
+        "coordinates": [
+          [
+            -122.5,
+            37.7
+          ],
+          [
+            -122.45,
+            37.75
+          ],
+          [
+            -122.4,
+            37.8
+          ]
+        ],
+        "name": "Study Transect",
+        "properties": {
+          "transect_id": "T001",
+          "length_km": 12.5
+        }
+      }
+    }
+  ],
+  "edges": []
+}

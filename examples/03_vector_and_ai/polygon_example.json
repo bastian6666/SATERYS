@@ -1,0 +1,40 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "position": {
+        "x": 120,
+        "y": 140
+      },
+      "label": "Study Area Polygon",
+      "type": "vector.create",
+      "args": {
+        "type": "polygon",
+        "coordinates": [
+          [
+            -122.5,
+            37.7
+          ],
+          [
+            -122.4,
+            37.7
+          ],
+          [
+            -122.4,
+            37.8
+          ],
+          [
+            -122.5,
+            37.8
+          ]
+        ],
+        "name": "San Francisco Bay Study Area",
+        "properties": {
+          "area_type": "urban",
+          "survey_year": 2024
+        }
+      }
+    }
+  ],
+  "edges": []
+}
