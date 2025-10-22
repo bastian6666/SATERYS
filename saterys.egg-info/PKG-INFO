@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: saterys
-Version: 0.3.9
+Version: 0.4
 Summary: Saterys — Scalable Analysis Toolkit for Earth Remote sYStemS
 Author-email: Sebastian Sanchez Bernal <bastian@example.com>
 License: MIT
@@ -32,6 +32,7 @@ Requires-Dist: APScheduler>=3.10.4
 Requires-Dist: SQLAlchemy>=2.0
 Requires-Dist: pytz>=2024.1
 Requires-Dist: tzlocal>=5.2
+Requires-Dist: openai>=1.0
 Dynamic: license-file
 
 <div align="center">
