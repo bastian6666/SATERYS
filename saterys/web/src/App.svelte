@@ -68,6 +68,16 @@
     sum:   [{ key: 'nums', label: 'Numbers', type: 'array', itemType: 'number', hint: 'e.g., 1,2,3' }],
     script:[{ key: 'code', label: 'Code', type: 'textarea', rows: 8, placeholder: "print('hello')" }],
     'raster.input': [{ key: 'path', label: 'Raster path', type: 'string', placeholder: '/path/to.tif' }],
+    'vector.input': [
+      { key: 'path', label: 'Vector path', type: 'string', placeholder: '/path/to.geojson' },
+      { key: 'layer', label: 'Layer (optional)', type: 'string', placeholder: 'layer name' }
+    ],
+    'vector.create': [
+      { key: 'type', label: 'Geometry type', type: 'select', options: ['point', 'line', 'polygon'] },
+      { key: 'coordinates', label: 'Coordinates (JSON)', type: 'textarea', rows: 4, placeholder: '[[lon, lat], ...]' },
+      { key: 'name', label: 'Feature name', type: 'string', placeholder: 'Feature 1' },
+      { key: 'properties', label: 'Properties (JSON)', type: 'textarea', rows: 3, placeholder: '{}' }
+    ],
   };
 
   function guessSchemaFromDefaults(def: any): Field[] {
@@ -320,7 +330,7 @@
 
   // ----- Leaflet map (always-on) -----
   let map: L.Map | null = null;
-  let overlayLayers: Map<string, L.TileLayer> = new Map();
+  let overlayLayers: Map<string, L.TileLayer | L.GeoJSON> = new Map();
   let layerControl: L.Control.Layers | null = null;
   let mapEl: HTMLDivElement | null = null;
   let mapContainerEl: HTMLDivElement | null = null;
@@ -398,10 +408,25 @@
     return null;
   }
 
+  function getVectorDataForNode(n: NodeData, i: number): any | null {
+    const out = lastOutputs[n.id];
+    if (out && typeof out === 'object' && out.type === 'vector') return out;
+    return null;
+  }
+
   async function previewNode(n: NodeData, i: number) {
     if (!map || !layerControl) { alert('Map not ready yet.'); return; }
+    
+    // Check if this is a vector node
+    const vectorData = getVectorDataForNode(n, i);
+    if (vectorData) {
+      await previewVectorNode(n, vectorData);
+      return;
+    }
+    
+    // Otherwise try raster
     const pth = getRasterPathForNode(n, i);
-    if (!pth) { alert('No raster path available. Run the pipeline or set args.path for raster.input.'); return; }
+    if (!pth) { alert('No raster or vector data available. Run the pipeline first.'); return; }
 
     const id = n.id;
     await fetch('/preview/register', {
@@ -433,6 +458,71 @@
       map.fitBounds(bounds, { padding: [10, 10], animate: true });
     } catch (e) {
       console.warn('Failed to get bounds for zoom:', e);
+    }
+  }
+
+  async function previewVectorNode(n: NodeData, vectorData: any) {
+    if (!map || !layerControl) return;
+    
+    const id = n.id;
+    const geojson = vectorData.geojson;
+    const bounds = vectorData.bounds;
+    
+    // Register vector data with backend
+    await fetch('/preview/register_vector', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, geojson, bounds })
+    });
+
+    const layerName = `${n.label} (${n.id})`;
+
+    // Remove existing layer if present
+    if (overlayLayers.has(id)) {
+      const existingLayer = overlayLayers.get(id)!;
+      map.removeLayer(existingLayer);
+      layerControl.removeLayer(existingLayer);
+      overlayLayers.delete(id);
+    }
+
+    // Create GeoJSON layer with custom styling
+    const newLayer = L.geoJSON(geojson, {
+      style: (feature) => ({
+        color: '#3388ff',
+        weight: 2,
+        opacity: 0.8,
+        fillOpacity: 0.3
+      }),
+      pointToLayer: (feature, latlng) => {
+        return L.circleMarker(latlng, {
+          radius: 6,
+          fillColor: '#3388ff',
+          color: '#fff',
+          weight: 1,
+          opacity: 1,
+          fillOpacity: 0.8
+        });
+      },
+      onEachFeature: (feature, layer) => {
+        // Add popup with properties
+        if (feature.properties) {
+          const props = Object.entries(feature.properties)
+            .map(([key, val]) => `<b>${key}:</b> ${val}`)
+            .join('<br>');
+          layer.bindPopup(props);
+        }
+      }
+    });
+
+    overlayLayers.set(id, newLayer);
+    newLayer.addTo(map);
+    layerControl.addOverlay(newLayer, layerName);
+
+    // Zoom to bounds if available
+    if (bounds && bounds.length === 4) {
+      const [west, south, east, north] = bounds;
+      const leafletBounds = L.latLngBounds([south, west], [north, east]);
+      map.fitBounds(leafletBounds, { padding: [10, 10], animate: true });
     }
   }
 

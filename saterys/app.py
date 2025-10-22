@@ -109,8 +109,11 @@ except Exception:
             "  pip install 'rio-tiler<6' numpy"
         ) from _e
 
-# Simple registry: preview id -> absolute path
+# Simple registry: preview id -> absolute path (for rasters)
 PREVIEWS: _Dict[str, str] = {}
+
+# Registry for vector data: preview id -> GeoJSON
+VECTOR_PREVIEWS: _Dict[str, Dict[str, Any]] = {}
 
 @app.post("/preview/register")
 def preview_register(payload: Dict[str, str]):
@@ -126,6 +129,49 @@ def preview_register(payload: Dict[str, str]):
         raise HTTPException(404, "file not found: %s" % ap)
     PREVIEWS[rid] = ap
     return {"ok": True, "id": rid, "path": ap}
+
+@app.post("/preview/register_vector")
+def preview_register_vector(payload: Dict[str, Any]):
+    """
+    Body: { "id": "myVector1", "geojson": {...}, "bounds": [minx, miny, maxx, maxy] }
+    """
+    rid = str(payload.get("id", "")).strip()
+    geojson = payload.get("geojson")
+    bounds = payload.get("bounds")
+    
+    if not rid:
+        raise HTTPException(400, "id is required")
+    if not geojson:
+        raise HTTPException(400, "geojson is required")
+    
+    VECTOR_PREVIEWS[rid] = {
+        "geojson": geojson,
+        "bounds": bounds
+    }
+    return {"ok": True, "id": rid, "feature_count": len(geojson.get("features", []))}
+
+@app.get("/preview/vector/{rid}")
+def preview_vector(rid: str):
+    """
+    Return the GeoJSON for a registered vector preview.
+    """
+    data = VECTOR_PREVIEWS.get(rid)
+    if not data:
+        raise HTTPException(404, "unknown vector preview id")
+    return data["geojson"]
+
+@app.get("/preview/vector_bounds/{rid}")
+def preview_vector_bounds(rid: str):
+    """
+    Return bounds for a registered vector preview.
+    """
+    data = VECTOR_PREVIEWS.get(rid)
+    if not data:
+        raise HTTPException(404, "unknown vector preview id")
+    bounds = data.get("bounds")
+    if not bounds:
+        raise HTTPException(404, "no bounds available for this vector")
+    return {"bounds": bounds, "crs": "EPSG:4326"}
 
 @app.get("/preview/bounds/{rid}")
 def preview_bounds(rid: str):
