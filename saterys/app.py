@@ -212,9 +212,24 @@ import json
 import tempfile
 import zipfile
 from pathlib import Path
+import re
 
 # In-memory vector store: vector_id -> GeoJSON FeatureCollection
 VECTORS: _Dict[str, _Dict[str, Any]] = {}
+
+def _validate_vector_id(vid: str) -> str:
+    """
+    Validate and sanitize vector ID to prevent path traversal and injection attacks.
+    Returns sanitized ID or raises HTTPException.
+    """
+    vid = str(vid).strip()
+    if not vid:
+        raise HTTPException(400, "Vector ID cannot be empty")
+    if not re.match(r'^[a-zA-Z0-9_-]+$', vid):
+        raise HTTPException(400, "Invalid vector ID. Only alphanumeric characters, underscore, and hyphen allowed.")
+    if len(vid) > 64:
+        raise HTTPException(400, "Vector ID too long (max 64 characters)")
+    return vid
 
 @app.post("/vector/register")
 def vector_register(payload: Dict[str, Any]):
@@ -222,10 +237,10 @@ def vector_register(payload: Dict[str, Any]):
     Register a GeoJSON FeatureCollection for visualization.
     Body: { "id": "myVector1", "geojson": {...} }
     """
-    vid = str(payload.get("id", "")).strip()
+    vid = _validate_vector_id(payload.get("id", ""))
     geojson = payload.get("geojson")
-    if not vid or not geojson:
-        raise HTTPException(400, "id and geojson are required")
+    if not geojson:
+        raise HTTPException(400, "geojson is required")
     
     # Validate it's a valid GeoJSON structure
     if not isinstance(geojson, dict) or geojson.get("type") not in ["FeatureCollection", "Feature"]:
@@ -246,6 +261,7 @@ def vector_get(vid: str):
     """
     Retrieve a registered GeoJSON FeatureCollection.
     """
+    vid = _validate_vector_id(vid)
     geojson = VECTORS.get(vid)
     if not geojson:
         raise HTTPException(404, "unknown vector id")
@@ -269,7 +285,11 @@ def vector_export_shapefile(vid: str):
     Export a registered GeoJSON FeatureCollection to shapefile (as a ZIP).
     Returns a ZIP file containing .shp, .shx, .dbf, .prj files.
     """
-    geojson = VECTORS.get(vid)
+    # Validate and sanitize vector ID to prevent path traversal
+    # After validation, vid is guaranteed to only contain [a-zA-Z0-9_-] characters
+    sanitized_vid = _validate_vector_id(vid)
+    
+    geojson = VECTORS.get(sanitized_vid)
     if not geojson:
         raise HTTPException(404, "unknown vector id")
     
@@ -278,9 +298,11 @@ def vector_export_shapefile(vid: str):
         from fiona.crs import from_epsg
         
         # Create a temporary directory for shapefile components
+        # Using sanitized_vid (validated to be safe) in paths within secure tmpdir
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            shp_path = tmppath / f"{vid}.shp"
+            # Safe: sanitized_vid only contains alphanumeric, underscore, hyphen
+            shp_path = tmppath / f"{sanitized_vid}.shp"
             
             # Determine geometry type from first feature
             features = geojson.get("features", [])
@@ -344,12 +366,13 @@ def vector_export_shapefile(vid: str):
                     })
             
             # Create a ZIP file with all shapefile components
-            zip_path = tmppath / f"{vid}.zip"
+            # Safe: sanitized_vid only contains alphanumeric, underscore, hyphen
+            zip_path = tmppath / f"{sanitized_vid}.zip"
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
                 for ext in [".shp", ".shx", ".dbf", ".prj", ".cpg"]:
-                    file_path = tmppath / f"{vid}{ext}"
+                    file_path = tmppath / f"{sanitized_vid}{ext}"
                     if file_path.exists():
-                        zipf.write(file_path, f"{vid}{ext}")
+                        zipf.write(file_path, f"{sanitized_vid}{ext}")
             
             # Read ZIP file and return as response
             with open(zip_path, "rb") as f:
@@ -359,7 +382,7 @@ def vector_export_shapefile(vid: str):
                 content=zip_content,
                 media_type="application/zip",
                 headers={
-                    "Content-Disposition": f"attachment; filename={vid}.zip"
+                    "Content-Disposition": f"attachment; filename={sanitized_vid}.zip"
                 }
             )
     
@@ -374,11 +397,8 @@ def vector_draw(payload: Dict[str, Any]):
     Create a vector layer from drawing data.
     Body: { "id": "myDrawing", "features": [...] }
     """
-    vid = str(payload.get("id", "")).strip()
+    vid = _validate_vector_id(payload.get("id", ""))
     features = payload.get("features", [])
-    
-    if not vid:
-        raise HTTPException(400, "id is required")
     
     if not isinstance(features, list):
         raise HTTPException(400, "features must be a list")
