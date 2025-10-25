@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "leaflet": "^1.9.4",
+    "leaflet-draw": "^1.0.4",
+    "@raruto/leaflet-elevation": "^2.4.6",
     "svelvet": "^11.0.5"
   }
 }

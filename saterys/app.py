@@ -206,6 +206,192 @@ def preview_tile(rid: str, z: int, x: int, y: int, indexes: str = ""):
     return Response(content=img, media_type="image/png")
 
 # ------------------------------------------------------------------------------
+# Vector data endpoints (GeoJSON handling and shapefile export)
+# ------------------------------------------------------------------------------
+import json
+import tempfile
+import zipfile
+from pathlib import Path
+
+# In-memory vector store: vector_id -> GeoJSON FeatureCollection
+VECTORS: _Dict[str, _Dict[str, Any]] = {}
+
+@app.post("/vector/register")
+def vector_register(payload: Dict[str, Any]):
+    """
+    Register a GeoJSON FeatureCollection for visualization.
+    Body: { "id": "myVector1", "geojson": {...} }
+    """
+    vid = str(payload.get("id", "")).strip()
+    geojson = payload.get("geojson")
+    if not vid or not geojson:
+        raise HTTPException(400, "id and geojson are required")
+    
+    # Validate it's a valid GeoJSON structure
+    if not isinstance(geojson, dict) or geojson.get("type") not in ["FeatureCollection", "Feature"]:
+        raise HTTPException(400, "geojson must be a valid GeoJSON object")
+    
+    # Normalize to FeatureCollection
+    if geojson.get("type") == "Feature":
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [geojson]
+        }
+    
+    VECTORS[vid] = geojson
+    return {"ok": True, "id": vid, "featureCount": len(geojson.get("features", []))}
+
+@app.get("/vector/get/{vid}")
+def vector_get(vid: str):
+    """
+    Retrieve a registered GeoJSON FeatureCollection.
+    """
+    geojson = VECTORS.get(vid)
+    if not geojson:
+        raise HTTPException(404, "unknown vector id")
+    return geojson
+
+@app.get("/vector/list")
+def vector_list():
+    """
+    List all registered vector IDs.
+    """
+    return {
+        "vectors": [
+            {"id": vid, "featureCount": len(gj.get("features", []))}
+            for vid, gj in VECTORS.items()
+        ]
+    }
+
+@app.post("/vector/export_shapefile/{vid}")
+def vector_export_shapefile(vid: str):
+    """
+    Export a registered GeoJSON FeatureCollection to shapefile (as a ZIP).
+    Returns a ZIP file containing .shp, .shx, .dbf, .prj files.
+    """
+    geojson = VECTORS.get(vid)
+    if not geojson:
+        raise HTTPException(404, "unknown vector id")
+    
+    try:
+        import fiona
+        from fiona.crs import from_epsg
+        
+        # Create a temporary directory for shapefile components
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            shp_path = tmppath / f"{vid}.shp"
+            
+            # Determine geometry type from first feature
+            features = geojson.get("features", [])
+            if not features:
+                raise HTTPException(400, "No features to export")
+            
+            first_geom_type = features[0].get("geometry", {}).get("type", "Point")
+            
+            # Map GeoJSON geometry types to Fiona schema types
+            geom_type_map = {
+                "Point": "Point",
+                "MultiPoint": "MultiPoint",
+                "LineString": "LineString",
+                "MultiLineString": "MultiLineString",
+                "Polygon": "Polygon",
+                "MultiPolygon": "MultiPolygon"
+            }
+            schema_geom = geom_type_map.get(first_geom_type, "Point")
+            
+            # Extract properties schema from first feature
+            props = features[0].get("properties", {})
+            schema_props = {}
+            for key, value in props.items():
+                if isinstance(value, str):
+                    schema_props[key] = "str"
+                elif isinstance(value, (int, float)):
+                    schema_props[key] = "float"
+                elif isinstance(value, bool):
+                    schema_props[key] = "int"
+                else:
+                    schema_props[key] = "str"
+            
+            schema = {
+                "geometry": schema_geom,
+                "properties": schema_props
+            }
+            
+            # Write shapefile
+            with fiona.open(
+                str(shp_path),
+                "w",
+                driver="ESRI Shapefile",
+                crs=from_epsg(4326),  # Assuming WGS84
+                schema=schema
+            ) as dst:
+                for feature in features:
+                    # Convert properties to match schema
+                    props_out = {}
+                    for key, value in feature.get("properties", {}).items():
+                        if key in schema_props:
+                            if schema_props[key] == "float":
+                                props_out[key] = float(value) if value is not None else 0.0
+                            elif schema_props[key] == "int":
+                                props_out[key] = int(value) if value is not None else 0
+                            else:
+                                props_out[key] = str(value) if value is not None else ""
+                    
+                    dst.write({
+                        "geometry": feature.get("geometry"),
+                        "properties": props_out
+                    })
+            
+            # Create a ZIP file with all shapefile components
+            zip_path = tmppath / f"{vid}.zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+                for ext in [".shp", ".shx", ".dbf", ".prj", ".cpg"]:
+                    file_path = tmppath / f"{vid}{ext}"
+                    if file_path.exists():
+                        zipf.write(file_path, f"{vid}{ext}")
+            
+            # Read ZIP file and return as response
+            with open(zip_path, "rb") as f:
+                zip_content = f.read()
+            
+            return Response(
+                content=zip_content,
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": f"attachment; filename={vid}.zip"
+                }
+            )
+    
+    except ImportError:
+        raise HTTPException(500, "fiona library not available for shapefile export")
+    except Exception as e:
+        raise HTTPException(500, f"Error exporting shapefile: {str(e)}")
+
+@app.post("/vector/draw")
+def vector_draw(payload: Dict[str, Any]):
+    """
+    Create a vector layer from drawing data.
+    Body: { "id": "myDrawing", "features": [...] }
+    """
+    vid = str(payload.get("id", "")).strip()
+    features = payload.get("features", [])
+    
+    if not vid:
+        raise HTTPException(400, "id is required")
+    
+    if not isinstance(features, list):
+        raise HTTPException(400, "features must be a list")
+    
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+    
+    VECTORS[vid] = geojson
+    return {"ok": True, "id": vid, "featureCount": len(features)}
+
+# ------------------------------------------------------------------------------
 # Serve built frontend (compiled Svelte) from saterys/static at "/"
 # ------------------------------------------------------------------------------
 

@@ -8,6 +8,9 @@
   // @ts-ignore
   import * as L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
+  // @ts-ignore
+  import 'leaflet-draw';
+  import 'leaflet-draw/dist/leaflet.draw.css';
 
   // ----- Types -----
   type NodeData = {
@@ -321,10 +324,15 @@
   // ----- Leaflet map (always-on) -----
   let map: L.Map | null = null;
   let overlayLayers: Map<string, L.TileLayer> = new Map();
+  let vectorLayers: Map<string, L.GeoJSON | L.FeatureGroup> = new Map();
   let layerControl: L.Control.Layers | null = null;
   let mapEl: HTMLDivElement | null = null;
   let mapContainerEl: HTMLDivElement | null = null;
   let ro: ResizeObserver | null = null;
+  let drawnItems: L.FeatureGroup | null = null;
+  let drawControl: any = null;
+  let enable3D = false;
+  let elevationControl: any = null;
 
   function setupResizeObserver() {
     if (!map || !mapContainerEl) return;
@@ -378,6 +386,78 @@
         layerControl = L.control.layers(baseLayers, {}, { position: 'topright', collapsed: false });
         layerControl.addTo(map);
 
+        // Initialize drawing controls
+        drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+
+        // @ts-ignore - Leaflet.draw types
+        drawControl = new L.Control.Draw({
+          position: 'topleft',
+          draw: {
+            polygon: {
+              allowIntersection: false,
+              drawError: {
+                color: '#e1e100',
+                message: '<strong>Error:</strong> Shape edges cannot cross!'
+              },
+              shapeOptions: {
+                color: '#97009c'
+              }
+            },
+            polyline: {
+              shapeOptions: {
+                color: '#f357a1',
+                weight: 3
+              }
+            },
+            circle: true,
+            rectangle: true,
+            marker: true,
+            circlemarker: false
+          },
+          edit: {
+            featureGroup: drawnItems,
+            remove: true
+          }
+        });
+        map.addControl(drawControl);
+
+        // Handle draw events
+        map.on(L.Draw.Event.CREATED, (e: any) => {
+          const layer = e.layer;
+          drawnItems.addLayer(layer);
+          
+          // Save to backend
+          const features = [];
+          drawnItems.eachLayer((l: any) => {
+            if (l.toGeoJSON) {
+              features.push(l.toGeoJSON());
+            }
+          });
+          
+          saveDrawnFeatures(features);
+        });
+
+        map.on(L.Draw.Event.EDITED, (e: any) => {
+          const features = [];
+          drawnItems.eachLayer((l: any) => {
+            if (l.toGeoJSON) {
+              features.push(l.toGeoJSON());
+            }
+          });
+          saveDrawnFeatures(features);
+        });
+
+        map.on(L.Draw.Event.DELETED, (e: any) => {
+          const features = [];
+          drawnItems.eachLayer((l: any) => {
+            if (l.toGeoJSON) {
+              features.push(l.toGeoJSON());
+            }
+          });
+          saveDrawnFeatures(features);
+        });
+
         setupResizeObserver();
         window.addEventListener('resize', onWin);
       }
@@ -390,6 +470,145 @@
       canvasRO?.disconnect();
     };
   });
+
+  async function saveDrawnFeatures(features: any[]) {
+    try {
+      await fetch('/vector/draw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          id: 'user_drawings',
+          features: features 
+        })
+      });
+    } catch (e) {
+      console.error('Failed to save drawn features:', e);
+    }
+  }
+
+  async function loadVectorLayer(vectorId: string, name?: string) {
+    if (!map || !layerControl) { 
+      alert('Map not ready yet.'); 
+      return; 
+    }
+
+    try {
+      const response = await fetch(`/vector/get/${vectorId}`);
+      const geojson = await response.json();
+
+      // Remove existing layer if present
+      if (vectorLayers.has(vectorId)) {
+        const existingLayer = vectorLayers.get(vectorId)!;
+        map.removeLayer(existingLayer);
+        layerControl.removeLayer(existingLayer);
+        vectorLayers.delete(vectorId);
+      }
+
+      // Add new GeoJSON layer
+      const geoJsonLayer = L.geoJSON(geojson, {
+        style: (feature) => ({
+          color: '#3388ff',
+          weight: 2,
+          opacity: 0.8,
+          fillOpacity: 0.4
+        }),
+        pointToLayer: (feature, latlng) => {
+          return L.circleMarker(latlng, {
+            radius: 6,
+            fillColor: "#ff7800",
+            color: "#000",
+            weight: 1,
+            opacity: 1,
+            fillOpacity: 0.8
+          });
+        },
+        onEachFeature: (feature, layer) => {
+          if (feature.properties) {
+            let popupContent = '<div style="max-width: 200px;">';
+            for (const [key, value] of Object.entries(feature.properties)) {
+              popupContent += `<strong>${key}:</strong> ${value}<br>`;
+            }
+            popupContent += '</div>';
+            layer.bindPopup(popupContent);
+          }
+        }
+      });
+
+      vectorLayers.set(vectorId, geoJsonLayer);
+      geoJsonLayer.addTo(map);
+      
+      const layerName = name || `Vector: ${vectorId}`;
+      layerControl.addOverlay(geoJsonLayer, layerName);
+
+      // Fit bounds to layer
+      const bounds = geoJsonLayer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [20, 20] });
+      }
+    } catch (e) {
+      console.error('Failed to load vector layer:', e);
+      alert(`Failed to load vector layer: ${e}`);
+    }
+  }
+
+  async function exportToShapefile(vectorId: string) {
+    try {
+      const response = await fetch(`/vector/export_shapefile/${vectorId}`, {
+        method: 'POST'
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${vectorId}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      alert(`Shapefile exported successfully as ${vectorId}.zip`);
+    } catch (e) {
+      console.error('Failed to export shapefile:', e);
+      alert(`Failed to export shapefile: ${e}`);
+    }
+  }
+
+  function toggle3DView() {
+    enable3D = !enable3D;
+    if (!map) return;
+
+    if (enable3D) {
+      // Add elevation profile control for 3D-like visualization
+      // Note: Full 3D requires CesiumJS or similar, but we add elevation profile as a start
+      if (!elevationControl) {
+        // @ts-ignore
+        if (L.control.elevation) {
+          elevationControl = L.control.elevation({
+            position: "bottomright",
+            theme: theme === 'dark' ? 'steelblue-theme' : 'lightblue-theme',
+            collapsed: false,
+            detached: true,
+            elevationDiv: "#elevation-div",
+            autohide: false,
+            collapsed: true
+          });
+          elevationControl.addTo(map);
+        } else {
+          alert('3D elevation profile requires leaflet.elevation plugin. Basic visualization enabled.');
+        }
+      }
+    } else {
+      if (elevationControl) {
+        map.removeControl(elevationControl);
+        elevationControl = null;
+      }
+    }
+  }
 
   function getRasterPathForNode(n: NodeData, i: number): string | null {
     const out = lastOutputs[n.id];
@@ -876,6 +1095,18 @@ function loadWorkflow() {
             <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3l9 5-9 5-9-5 9-5zm0 8l9 5-9 5-9-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round"/></svg>
             <span class="txt">Clear Layers</span>
           </button>
+          <button class="tool" on:click={() => loadVectorLayer('user_drawings', 'User Drawings')} title="Load drawn vectors">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M3 15v4c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-4M7 10l5 5 5-5M12 3v12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="txt">Load Vectors</span>
+          </button>
+          <button class="tool" on:click={() => exportToShapefile('user_drawings')} title="Export to shapefile">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4m14-7l-5-5-5 5m5-5v12" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="txt">Export Shapefile</span>
+          </button>
+          <button class="tool" on:click={toggle3DView} title="Toggle 3D view">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12" stroke="currentColor" stroke-width="2" fill="none"/></svg>
+            <span class="txt">{enable3D ? '3D: On' : '3D: Off'}</span>
+          </button>
           <button class="tool" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'} title="Toggle theme">
             <svg viewBox="0 0 24 24" width="16" height="16"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
             <span class="txt">Theme: {theme}</span>
@@ -1047,6 +1278,7 @@ function loadWorkflow() {
         <!-- RIGHT: map viewer -->
         <div class="split-right" bind:this={mapContainerEl}>
           <div bind:this={mapEl} class="map"></div>
+          <div id="elevation-div" style="display: none;"></div>
         </div>
       </div>
     </div>
