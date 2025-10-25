@@ -206,6 +206,133 @@ def preview_tile(rid: str, z: int, x: int, y: int, indexes: str = ""):
     return Response(content=img, media_type="image/png")
 
 # ------------------------------------------------------------------------------
+# Vector data preview endpoints (GeoJSON, Shapefile, etc.)
+# ------------------------------------------------------------------------------
+import json
+
+# Simple registry: vector id -> { "path": abs_path, "geojson": {...} }
+VECTOR_PREVIEWS: _Dict[str, _Dict[str, Any]] = {}
+
+@app.post("/preview/vector/register")
+def vector_preview_register(payload: Dict[str, str]):
+    """
+    Register a vector file for preview.
+    Body: { "id": "myVector1", "path": "/abs/path/to/file.shp|.geojson|.gpkg" }
+    Converts to GeoJSON and stores for map preview.
+    """
+    vid = str(payload.get("id", "")).strip()
+    pth = str(payload.get("path", "")).strip()
+    if not vid or not pth:
+        raise HTTPException(400, "id and path are required")
+    ap = os.path.abspath(pth)
+    if not os.path.exists(ap):
+        raise HTTPException(404, f"file not found: {ap}")
+    
+    # Read vector file and convert to GeoJSON
+    try:
+        import fiona
+        from shapely.geometry import shape, mapping
+        import pyproj
+        from pyproj import Transformer
+        
+        features = []
+        source_crs = None
+        
+        with fiona.open(ap, 'r') as src:
+            source_crs = src.crs
+            for feature in src:
+                geom = shape(feature['geometry'])
+                props = feature.get('properties', {})
+                
+                # Transform to WGS84 if needed
+                if source_crs and source_crs != 'EPSG:4326':
+                    try:
+                        # Create transformer from source CRS to WGS84
+                        transformer = Transformer.from_crs(
+                            source_crs,
+                            'EPSG:4326',
+                            always_xy=True
+                        )
+                        # Transform geometry
+                        from shapely.ops import transform
+                        geom = transform(transformer.transform, geom)
+                    except Exception as e:
+                        print(f"Warning: Could not transform geometry: {e}")
+                
+                features.append({
+                    "type": "Feature",
+                    "geometry": mapping(geom),
+                    "properties": props
+                })
+        
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features
+        }
+        
+        VECTOR_PREVIEWS[vid] = {
+            "path": ap,
+            "geojson": geojson,
+            "source_crs": str(source_crs) if source_crs else "EPSG:4326"
+        }
+        
+        return {
+            "ok": True,
+            "id": vid,
+            "path": ap,
+            "feature_count": len(features),
+            "source_crs": str(source_crs) if source_crs else "EPSG:4326"
+        }
+        
+    except Exception as e:
+        raise HTTPException(500, f"Error reading vector file: {str(e)}")
+
+@app.get("/preview/vector/{vid}/geojson")
+def vector_preview_geojson(vid: str):
+    """
+    Return the GeoJSON for a registered vector preview.
+    """
+    if vid not in VECTOR_PREVIEWS:
+        raise HTTPException(404, "unknown vector preview id")
+    
+    return VECTOR_PREVIEWS[vid]["geojson"]
+
+@app.get("/preview/vector/{vid}/bounds")
+def vector_preview_bounds(vid: str):
+    """
+    Return the bounds [west, south, east, north] of a vector layer.
+    """
+    if vid not in VECTOR_PREVIEWS:
+        raise HTTPException(404, "unknown vector preview id")
+    
+    geojson = VECTOR_PREVIEWS[vid]["geojson"]
+    
+    # Calculate bounds from all features
+    from shapely.geometry import shape
+    
+    min_x, min_y, max_x, max_y = float('inf'), float('inf'), float('-inf'), float('-inf')
+    
+    for feature in geojson.get("features", []):
+        try:
+            geom = shape(feature["geometry"])
+            bounds = geom.bounds  # (minx, miny, maxx, maxy)
+            min_x = min(min_x, bounds[0])
+            min_y = min(min_y, bounds[1])
+            max_x = max(max_x, bounds[2])
+            max_y = max(max_y, bounds[3])
+        except:
+            continue
+    
+    if min_x == float('inf'):
+        # No valid geometries
+        return {"bounds": [-180, -90, 180, 90], "crs": "EPSG:4326"}
+    
+    return {
+        "bounds": [min_x, min_y, max_x, max_y],
+        "crs": "EPSG:4326"
+    }
+
+# ------------------------------------------------------------------------------
 # Serve built frontend (compiled Svelte) from saterys/static at "/"
 # ------------------------------------------------------------------------------
 
