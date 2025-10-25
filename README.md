@@ -56,7 +56,9 @@
 - Interactive map preview with Leaflet and tile-based raster visualization via [rio-tiler](https://github.com/cogeotiff/rio-tiler)
 - Coordinate system handling and automatic reprojection
 - Raster statistics, band math, and index calculation (NDVI, NDWI, PCA, etc.)
-- Vector data support (GeoJSON, SHP, GPKG) for overlays and analysis
+- **Vector data support (GeoJSON, SHP, GPKG)** for overlays and analysis
+- **Interactive drawing tools** for creating vector features directly on the map
+- **Elevation profiles** and 3D terrain data extraction from DEMs
 
 </td>
 <td>
@@ -86,6 +88,8 @@
 - Real-time workflow editing and execution feedback
 - Integrated documentation and example workflows
 - User authentication and role-based access (optional)
+- **Interactive map with drawing tools** (polygons, lines, markers)
+- **Export drawn features** as GeoJSON
 
 </td>
 </tr>
@@ -201,6 +205,9 @@ def process_raster(input_raster):
 | 🌿 **raster.ndvi** | Calculate NDVI | Vegetation analysis |
 | 🌊 **raster.ndwi** | Calculate NDWI | Water body detection |
 | 📊 **raster.pca** | Principal Component Analysis | Dimensionality reduction |
+| 🗺️ **vector.input** | Load vector data (SHP, GeoJSON, GPKG) | Vector data ingestion |
+| ✏️ **vector.create** | Create/save vector features | Vector data creation |
+| ⛰️ **raster.elevation_profile** | Extract elevation profiles from DEMs | 3D terrain analysis |
 | ➕ **sum** | Sum numeric values | Basic arithmetic |
 | 👋 **hello** | Hello world example | Testing/demos |
 | 📝 **script** | Custom Python code | Flexible processing |
@@ -231,7 +238,22 @@ POST /preview/register
 
 # Get map tiles
 GET /preview/tile/{id}/{z}/{x}/{y}.png
+
+# Register vector data for preview
+POST /preview/vector/register
+{
+  "id": "my-vector",
+  "path": "/path/to/file.shp"
+}
+
+# Get vector as GeoJSON
+GET /preview/vector/{id}/geojson
+
+# Get vector bounds
+GET /preview/vector/{id}/bounds
 ```
+
+For detailed information on vector features, see [Vector Data Documentation](docs/vector-features.md).
 
 ---
 
