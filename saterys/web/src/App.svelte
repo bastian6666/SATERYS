@@ -336,6 +336,13 @@
   let drawControl: any = null;
   let is3DMode = false;
   let buildingsLayer: L.TileLayer | null = null;
+  let buildingsGeoJSONLayer: any = null;  // Store reference to buildings GeoJSON layer
+  
+  // 3D visualization constants
+  const BUILDING_BASE_COLOR = { r: 100, g: 100, b: 120 };
+  const OVERPASS_TIMEOUT = 10;  // seconds
+  const DEFAULT_BUILDING_HEIGHT = 10;  // meters
+  const BUILDING_LEVEL_HEIGHT = 3.5;  // meters per floor
 
   function setupResizeObserver() {
     if (!map || !mapContainerEl) return;
@@ -881,11 +888,10 @@ function toggle3D() {
     }
     
     // Remove buildings GeoJSON layer if it exists
-    map.eachLayer((layer: any) => {
-      if (layer.options && layer.options.className === 'buildings-3d') {
-        map?.removeLayer(layer);
-      }
-    });
+    if (buildingsGeoJSONLayer && map) {
+      map.removeLayer(buildingsGeoJSONLayer);
+      buildingsGeoJSONLayer = null;
+    }
     
     map.off('moveend', fetch3DBuildingsForView);
     
@@ -905,7 +911,7 @@ async function fetch3DBuildingsForView() {
   
   try {
     // Fetch buildings from Overpass API (simplified query)
-    const query = `[out:json][timeout:5];(way["building"](${bbox}););out geom;`;
+    const query = `[out:json][timeout:${OVERPASS_TIMEOUT}];(way["building"](${bbox}););out geom;`;
     const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
     
     const res = await fetch(url);
@@ -913,21 +919,27 @@ async function fetch3DBuildingsForView() {
     
     const data = await res.json();
     
-    // Remove existing buildings layer
-    map.eachLayer((layer: any) => {
-      if (layer.options && layer.options.className === 'buildings-3d') {
-        map?.removeLayer(layer);
-      }
-    });
+    // Remove existing buildings layer using stored reference
+    if (buildingsGeoJSONLayer && map) {
+      map.removeLayer(buildingsGeoJSONLayer);
+      buildingsGeoJSONLayer = null;
+    }
     
     // Convert to GeoJSON and add with 3D styling
     const features = data.elements.filter((el: any) => el.type === 'way').map((el: any) => {
       const coords = el.geometry.map((node: any) => [node.lon, node.lat]);
+      
+      // Calculate height: prioritize explicit height, then building levels, then default
+      let height = DEFAULT_BUILDING_HEIGHT;
+      if (el.tags?.height && parseFloat(el.tags.height) > 0) {
+        height = parseFloat(el.tags.height);
+      } else if (el.tags?.['building:levels'] && parseInt(el.tags['building:levels']) > 0) {
+        height = parseInt(el.tags['building:levels']) * BUILDING_LEVEL_HEIGHT;
+      }
+      
       return {
         type: 'Feature',
-        properties: { 
-          height: el.tags?.height || el.tags?.['building:levels'] ? (parseInt(el.tags['building:levels']) * 3.5) : 10
-        },
+        properties: { height },
         geometry: {
           type: 'Polygon',
           coordinates: [coords]
@@ -936,12 +948,12 @@ async function fetch3DBuildingsForView() {
     });
     
     if (features.length > 0) {
-      const buildingsGeoJSON = L.geoJSON({ type: 'FeatureCollection', features }, {
+      buildingsGeoJSONLayer = L.geoJSON({ type: 'FeatureCollection', features }, {
         style: (feature: any) => {
-          const height = feature?.properties?.height || 10;
+          const height = feature?.properties?.height || DEFAULT_BUILDING_HEIGHT;
           const brightness = Math.max(0.3, Math.min(1, height / 50));
           return {
-            fillColor: `rgba(100, 100, 120, ${brightness})`,
+            fillColor: `rgba(${BUILDING_BASE_COLOR.r}, ${BUILDING_BASE_COLOR.g}, ${BUILDING_BASE_COLOR.b}, ${brightness})`,
             color: '#444',
             weight: 1,
             fillOpacity: 0.7,
@@ -949,7 +961,7 @@ async function fetch3DBuildingsForView() {
           };
         }
       });
-      buildingsGeoJSON.addTo(map);
+      buildingsGeoJSONLayer.addTo(map);
     }
   } catch (err) {
     // Silently fail - 3D buildings are optional enhancement

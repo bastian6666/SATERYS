@@ -239,9 +239,14 @@ async def upload_shapefile(file: UploadFile = File(...)):
         tmp_zip_path = tmp_zip.name
     
     try:
-        # Extract zip to temp directory
+        # Extract zip to temp directory (with security check for zip slip)
         extract_dir = tempfile.mkdtemp()
         with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
+            # Validate all paths in the zip to prevent zip slip
+            for member in zip_ref.namelist():
+                member_path = os.path.join(extract_dir, member)
+                if not member_path.startswith(extract_dir):
+                    raise HTTPException(400, "Invalid zip file - contains unsafe paths")
             zip_ref.extractall(extract_dir)
         
         # Find the .shp file
