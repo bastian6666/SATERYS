@@ -56,6 +56,9 @@
 - Interactive map preview with Leaflet and tile-based raster visualization via [rio-tiler](https://github.com/cogeotiff/rio-tiler)
 - Coordinate system handling and automatic reprojection
 - Raster statistics, band math, and index calculation (NDVI, NDWI, PCA, etc.)
+- **Vector data drawing and visualization**: Interactive drawing tools for points, lines, polygons
+- **Shapefile export**: Export drawn features and vector data to ESRI Shapefile format
+- **3D visualization**: Elevation profiles and 3D-like terrain visualization
 - Vector data support (GeoJSON, SHP, GPKG) for overlays and analysis
 
 </td>
@@ -189,6 +192,48 @@ def process_raster(input_raster):
         return {"custom_index": evi}
 ```
 
+### Vector Data Drawing and Export
+
+Draw and analyze vector features directly on the map:
+
+```bash
+# 1. Start SATERYS and open the web interface
+# 2. Use drawing tools on the map:
+#    - Click marker icon to draw points
+#    - Click polyline icon to draw lines
+#    - Click polygon icon to draw areas
+# 3. Click "Load Vectors" to visualize drawn features
+# 4. Click "Export Shapefile" to download as ZIP
+
+# Or use the API programmatically:
+```
+
+**Example Vector Data Registration:**
+```python
+import requests
+
+# Register points of interest
+poi_data = {
+    "id": "landmarks",
+    "geojson": {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [-122.4, 37.8]},
+            "properties": {"name": "Golden Gate Bridge", "year": 1937}
+        }]
+    }
+}
+
+response = requests.post('http://localhost:8000/vector/register', json=poi_data)
+print(response.json())
+
+# Export to shapefile
+response = requests.post('http://localhost:8000/vector/export_shapefile/landmarks')
+with open('landmarks.zip', 'wb') as f:
+    f.write(response.content)
+```
+
 ---
 
 ## 📚 Documentation
@@ -231,6 +276,34 @@ POST /preview/register
 
 # Get map tiles
 GET /preview/tile/{id}/{z}/{x}/{y}.png
+
+# Vector data endpoints
+
+# Register vector data (GeoJSON)
+POST /vector/register
+{
+  "id": "my-vector",
+  "geojson": {
+    "type": "FeatureCollection",
+    "features": [...]
+  }
+}
+
+# Get vector data
+GET /vector/get/{id}
+
+# List all vectors
+GET /vector/list
+
+# Export to shapefile (returns ZIP)
+POST /vector/export_shapefile/{id}
+
+# Save drawn features
+POST /vector/draw
+{
+  "id": "user_drawings",
+  "features": [...]
+}
 ```
 
 ---
