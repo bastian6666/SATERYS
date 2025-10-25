@@ -206,6 +206,175 @@ def preview_tile(rid: str, z: int, x: int, y: int, indexes: str = ""):
     return Response(content=img, media_type="image/png")
 
 # ------------------------------------------------------------------------------
+# Vector data endpoints (shapefile <-> GeoJSON conversion)
+# ------------------------------------------------------------------------------
+import json
+import tempfile
+import zipfile
+from fastapi import UploadFile, File
+
+try:
+    import fiona
+    from shapely.geometry import shape, mapping
+    FIONA_AVAILABLE = True
+except ImportError:
+    FIONA_AVAILABLE = False
+
+@app.post("/vector/upload")
+async def upload_shapefile(file: UploadFile = File(...)):
+    """
+    Upload a shapefile (as a zip containing .shp, .shx, .dbf, .prj) and convert to GeoJSON.
+    Returns GeoJSON FeatureCollection.
+    """
+    if not FIONA_AVAILABLE:
+        raise HTTPException(500, "fiona not installed - cannot process shapefiles")
+    
+    if not file.filename or not file.filename.endswith('.zip'):
+        raise HTTPException(400, "Please upload a .zip file containing shapefile components")
+    
+    # Save uploaded file to temp location
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_zip:
+        content = await file.read()
+        tmp_zip.write(content)
+        tmp_zip_path = tmp_zip.name
+    
+    try:
+        # Extract zip to temp directory
+        extract_dir = tempfile.mkdtemp()
+        with zipfile.ZipFile(tmp_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+        
+        # Find the .shp file
+        shp_file = None
+        for fname in os.listdir(extract_dir):
+            if fname.endswith('.shp'):
+                shp_file = os.path.join(extract_dir, fname)
+                break
+        
+        if not shp_file:
+            raise HTTPException(400, "No .shp file found in the zip")
+        
+        # Read shapefile and convert to GeoJSON
+        features = []
+        with fiona.open(shp_file, 'r') as src:
+            for feature in src:
+                geojson_feature = {
+                    "type": "Feature",
+                    "geometry": feature['geometry'],
+                    "properties": feature.get('properties', {})
+                }
+                features.append(geojson_feature)
+        
+        geojson = {
+            "type": "FeatureCollection",
+            "features": features
+        }
+        
+        # Cleanup
+        import shutil
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        os.unlink(tmp_zip_path)
+        
+        return geojson
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to process shapefile: {str(e)}")
+
+@app.post("/vector/save")
+async def save_geojson_as_shapefile(payload: Dict[str, Any]):
+    """
+    Convert GeoJSON FeatureCollection to shapefile and return as downloadable zip.
+    Body: { "geojson": {...}, "filename": "output" }
+    """
+    if not FIONA_AVAILABLE:
+        raise HTTPException(500, "fiona not installed - cannot create shapefiles")
+    
+    geojson = payload.get('geojson')
+    filename = payload.get('filename', 'vector_data')
+    
+    if not geojson or geojson.get('type') != 'FeatureCollection':
+        raise HTTPException(400, "Invalid GeoJSON FeatureCollection")
+    
+    features = geojson.get('features', [])
+    if not features:
+        raise HTTPException(400, "No features to save")
+    
+    try:
+        # Create temp directory for shapefile components
+        temp_dir = tempfile.mkdtemp()
+        shp_path = os.path.join(temp_dir, f"{filename}.shp")
+        
+        # Determine geometry type from first feature
+        first_geom = features[0]['geometry']
+        geom_type = first_geom['type']
+        
+        # Map GeoJSON geometry types to Fiona schema types
+        fiona_geom_map = {
+            'Point': 'Point',
+            'LineString': 'LineString',
+            'Polygon': 'Polygon',
+            'MultiPoint': 'MultiPoint',
+            'MultiLineString': 'MultiLineString',
+            'MultiPolygon': 'MultiPolygon'
+        }
+        
+        schema_geom = fiona_geom_map.get(geom_type, 'Polygon')
+        
+        # Build properties schema from first feature
+        properties = features[0].get('properties', {})
+        schema_props = {}
+        for key, value in properties.items():
+            if isinstance(value, str):
+                schema_props[key] = 'str'
+            elif isinstance(value, int):
+                schema_props[key] = 'int'
+            elif isinstance(value, float):
+                schema_props[key] = 'float'
+            else:
+                schema_props[key] = 'str'
+        
+        schema = {
+            'geometry': schema_geom,
+            'properties': schema_props
+        }
+        
+        # Write shapefile
+        with fiona.open(shp_path, 'w', driver='ESRI Shapefile', 
+                       crs='EPSG:4326', schema=schema) as dst:
+            for feature in features:
+                dst.write({
+                    'geometry': feature['geometry'],
+                    'properties': feature.get('properties', {})
+                })
+        
+        # Create zip file with all shapefile components
+        zip_path = os.path.join(temp_dir, f"{filename}.zip")
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            for fname in os.listdir(temp_dir):
+                if fname != f"{filename}.zip":
+                    file_path = os.path.join(temp_dir, fname)
+                    zipf.write(file_path, arcname=fname)
+        
+        # Read zip file content
+        with open(zip_path, 'rb') as f:
+            zip_content = f.read()
+        
+        # Cleanup
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        return Response(
+            content=zip_content,
+            media_type='application/zip',
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}.zip"'
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(500, f"Failed to create shapefile: {str(e)}")
+
+# ------------------------------------------------------------------------------
 # Serve built frontend (compiled Svelte) from saterys/static at "/"
 # ------------------------------------------------------------------------------
 
