@@ -852,29 +852,108 @@ function toggle3D() {
   is3DMode = !is3DMode;
   
   if (is3DMode) {
-    // Add 3D buildings layer using OpenStreetMap buildings data with height
-    // This uses a special tile layer that renders buildings in pseudo-3D
-    buildingsLayer = L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', {
-      opacity: 0.7,
-      maxZoom: 19,
-      attribution: '© OpenStreetMap contributors, Humanitarian OSM Team'
+    // Add shadow/depth effect to the base layer
+    const currentZoom = map.getZoom();
+    
+    // Add a terrain hillshade layer for depth perception
+    buildingsLayer = L.tileLayer('https://tiles.wmflabs.org/hillshading/{z}/{x}/{y}.png', {
+      opacity: 0.4,
+      maxZoom: 18,
+      attribution: '© OpenStreetMap contributors, Hillshading: Colin Marquardt'
     });
     buildingsLayer.addTo(map);
     
-    // Add visual indicator for 3D mode
-    pushLog('3d', true, '3D mode enabled - Buildings layer added');
-    showLogs = true;
+    // Add OSM buildings data as GeoJSON with 3D-like styling
+    if (currentZoom >= 15) {
+      fetch3DBuildingsForView();
+    }
     
-    // Adjust map tilt if supported (not in standard Leaflet, but good for future)
-    // For now, we just add an enhanced buildings layer
+    // Add listener to fetch buildings when zooming/panning
+    map.on('moveend', fetch3DBuildingsForView);
+    
+    pushLog('3d', true, '3D mode enabled - Terrain hillshading and buildings layer active');
+    showLogs = true;
   } else {
-    // Remove 3D layer
+    // Remove 3D layers
     if (buildingsLayer && map) {
       map.removeLayer(buildingsLayer);
       buildingsLayer = null;
     }
+    
+    // Remove buildings GeoJSON layer if it exists
+    map.eachLayer((layer: any) => {
+      if (layer.options && layer.options.className === 'buildings-3d') {
+        map?.removeLayer(layer);
+      }
+    });
+    
+    map.off('moveend', fetch3DBuildingsForView);
+    
     pushLog('3d', true, '3D mode disabled');
     showLogs = true;
+  }
+}
+
+async function fetch3DBuildingsForView() {
+  if (!map || !is3DMode) return;
+  
+  const zoom = map.getZoom();
+  if (zoom < 15) return; // Only show buildings at high zoom levels
+  
+  const bounds = map.getBounds();
+  const bbox = `${bounds.getSouth()},${bounds.getWest()},${bounds.getNorth()},${bounds.getEast()}`;
+  
+  try {
+    // Fetch buildings from Overpass API (simplified query)
+    const query = `[out:json][timeout:5];(way["building"](${bbox}););out geom;`;
+    const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+    
+    const res = await fetch(url);
+    if (!res.ok) return;
+    
+    const data = await res.json();
+    
+    // Remove existing buildings layer
+    map.eachLayer((layer: any) => {
+      if (layer.options && layer.options.className === 'buildings-3d') {
+        map?.removeLayer(layer);
+      }
+    });
+    
+    // Convert to GeoJSON and add with 3D styling
+    const features = data.elements.filter((el: any) => el.type === 'way').map((el: any) => {
+      const coords = el.geometry.map((node: any) => [node.lon, node.lat]);
+      return {
+        type: 'Feature',
+        properties: { 
+          height: el.tags?.height || el.tags?.['building:levels'] ? (parseInt(el.tags['building:levels']) * 3.5) : 10
+        },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [coords]
+        }
+      };
+    });
+    
+    if (features.length > 0) {
+      const buildingsGeoJSON = L.geoJSON({ type: 'FeatureCollection', features }, {
+        style: (feature: any) => {
+          const height = feature?.properties?.height || 10;
+          const brightness = Math.max(0.3, Math.min(1, height / 50));
+          return {
+            fillColor: `rgba(100, 100, 120, ${brightness})`,
+            color: '#444',
+            weight: 1,
+            fillOpacity: 0.7,
+            className: 'buildings-3d'
+          };
+        }
+      });
+      buildingsGeoJSON.addTo(map);
+    }
+  } catch (err) {
+    // Silently fail - 3D buildings are optional enhancement
+    console.warn('Failed to fetch buildings:', err);
   }
 }
 
