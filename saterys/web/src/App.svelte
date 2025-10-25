@@ -8,6 +8,11 @@
   // @ts-ignore
   import * as L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
+  
+  // Leaflet.draw
+  // @ts-ignore
+  import 'leaflet-draw';
+  import 'leaflet-draw/dist/leaflet.draw.css';
 
   // ----- Types -----
   type NodeData = {
@@ -331,6 +336,9 @@
   let mapEl: HTMLDivElement | null = null;
   let mapContainerEl: HTMLDivElement | null = null;
   let ro: ResizeObserver | null = null;
+  let drawnItems: L.FeatureGroup | null = null;
+  let drawControl: any = null;
+  let isDrawingEnabled = false;
 
   function setupResizeObserver() {
     if (!map || !mapContainerEl) return;
@@ -344,6 +352,46 @@
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
     requestAnimationFrame(() => map?.invalidateSize());
+  }
+
+  function toggleDrawing() {
+    isDrawingEnabled = !isDrawingEnabled;
+    if (map && drawControl) {
+      if (isDrawingEnabled) {
+        map.addControl(drawControl);
+      } else {
+        map.removeControl(drawControl);
+      }
+    }
+  }
+
+  function exportDrawnFeatures() {
+    if (!drawnItems) return;
+    
+    const features: any[] = [];
+    drawnItems.eachLayer((layer: any) => {
+      if (layer.toGeoJSON) {
+        features.push(layer.toGeoJSON());
+      }
+    });
+    
+    const geojson = {
+      type: "FeatureCollection",
+      features: features
+    };
+    
+    // Download as GeoJSON
+    const json = JSON.stringify(geojson, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `drawn-features-${new Date().toISOString().replace(/:/g, '-').split('.')[0]}.geojson`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    pushLog('system', true, `Exported ${features.length} drawn features as GeoJSON`);
+    showLogs = true;
   }
 
   onMount(() => {
@@ -383,6 +431,61 @@
 
         layerControl = L.control.layers(baseLayers, {}, { position: 'topright', collapsed: false });
         layerControl.addTo(map);
+
+        // Initialize drawing feature group
+        drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+
+        // Create draw control
+        drawControl = new (L as any).Control.Draw({
+          draw: {
+            polygon: {
+              allowIntersection: false,
+              shapeOptions: {
+                color: '#3388ff',
+                fillOpacity: 0.3
+              }
+            },
+            polyline: {
+              shapeOptions: {
+                color: '#3388ff'
+              }
+            },
+            rectangle: {
+              shapeOptions: {
+                color: '#3388ff',
+                fillOpacity: 0.3
+              }
+            },
+            circle: {
+              shapeOptions: {
+                color: '#3388ff',
+                fillOpacity: 0.3
+              }
+            },
+            marker: true,
+            circlemarker: false
+          },
+          edit: {
+            featureGroup: drawnItems,
+            remove: true
+          }
+        });
+
+        // Handle draw events
+        map.on((L as any).Draw.Event.CREATED, (e: any) => {
+          const layer = e.layer;
+          drawnItems?.addLayer(layer);
+          pushLog('system', true, `Drew ${e.layerType}: ${JSON.stringify(layer.toGeoJSON())}`);
+        });
+
+        map.on((L as any).Draw.Event.EDITED, (e: any) => {
+          pushLog('system', true, `Edited ${e.layers.getLayers().length} feature(s)`);
+        });
+
+        map.on((L as any).Draw.Event.DELETED, (e: any) => {
+          pushLog('system', true, `Deleted ${e.layers.getLayers().length} feature(s)`);
+        });
 
         setupResizeObserver();
         window.addEventListener('resize', onWin);
@@ -943,6 +1046,14 @@ function loadWorkflow() {
       <button class="icon-btn" title="Clear map layers" on:click={clearOverlayLayers} disabled={overlayLayers.size === 0}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l9 5-9 5-9-5 9-5zm0 8l9 5-9 5-9-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round"/></svg>
         <span>Layers</span>
+      </button>
+      <button class="icon-btn" title={isDrawingEnabled ? 'Disable drawing' : 'Enable drawing'} on:click={toggleDrawing}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>{isDrawingEnabled ? 'Drawing' : 'Draw'}</span>
+      </button>
+      <button class="icon-btn" title="Export drawn features" on:click={exportDrawnFeatures} disabled={!drawnItems || drawnItems.getLayers().length === 0}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Export</span>
       </button>
       <button class="icon-btn" title="Toggle theme" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>
