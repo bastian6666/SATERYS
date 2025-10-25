@@ -8,6 +8,11 @@
   // @ts-ignore
   import * as L from 'leaflet';
   import 'leaflet/dist/leaflet.css';
+  
+  // Leaflet.draw
+  // @ts-ignore
+  import 'leaflet-draw';
+  import 'leaflet-draw/dist/leaflet.draw.css';
 
   // ----- Types -----
   type NodeData = {
@@ -68,6 +73,12 @@
     sum:   [{ key: 'nums', label: 'Numbers', type: 'array', itemType: 'number', hint: 'e.g., 1,2,3' }],
     script:[{ key: 'code', label: 'Code', type: 'textarea', rows: 8, placeholder: "print('hello')" }],
     'raster.input': [{ key: 'path', label: 'Raster path', type: 'string', placeholder: '/path/to.tif' }],
+    'vector.input': [{ key: 'path', label: 'Vector path', type: 'string', placeholder: '/path/to.shp' }],
+    'vector.create': [
+      { key: 'geometry_type', label: 'Geometry type', type: 'select', options: ['Polygon', 'LineString', 'Point'] },
+      { key: 'output_format', label: 'Output format', type: 'select', options: ['GeoJSON', 'ESRI Shapefile'] },
+      { key: 'output_path', label: 'Output path (optional)', type: 'string', placeholder: 'auto-generated' }
+    ],
   };
 
   function guessSchemaFromDefaults(def: any): Field[] {
@@ -320,11 +331,14 @@
 
   // ----- Leaflet map (always-on) -----
   let map: L.Map | null = null;
-  let overlayLayers: Map<string, L.TileLayer> = new Map();
+  let overlayLayers: Map<string, L.TileLayer | L.GeoJSON> = new Map();
   let layerControl: L.Control.Layers | null = null;
   let mapEl: HTMLDivElement | null = null;
   let mapContainerEl: HTMLDivElement | null = null;
   let ro: ResizeObserver | null = null;
+  let drawnItems: L.FeatureGroup | null = null;
+  let drawControl: any = null;
+  let isDrawingEnabled = false;
 
   function setupResizeObserver() {
     if (!map || !mapContainerEl) return;
@@ -338,6 +352,46 @@
   function toggleSidebar() {
     sidebarCollapsed = !sidebarCollapsed;
     requestAnimationFrame(() => map?.invalidateSize());
+  }
+
+  function toggleDrawing() {
+    isDrawingEnabled = !isDrawingEnabled;
+    if (map && drawControl) {
+      if (isDrawingEnabled) {
+        map.addControl(drawControl);
+      } else {
+        map.removeControl(drawControl);
+      }
+    }
+  }
+
+  function exportDrawnFeatures() {
+    if (!drawnItems) return;
+    
+    const features: any[] = [];
+    drawnItems.eachLayer((layer: any) => {
+      if (layer.toGeoJSON) {
+        features.push(layer.toGeoJSON());
+      }
+    });
+    
+    const geojson = {
+      type: "FeatureCollection",
+      features: features
+    };
+    
+    // Download as GeoJSON
+    const json = JSON.stringify(geojson, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `drawn-features-${new Date().toISOString().replace(/:/g, '-').split('.')[0]}.geojson`;
+    a.click();
+    URL.revokeObjectURL(url);
+    
+    pushLog('system', true, `Exported ${features.length} drawn features as GeoJSON`);
+    showLogs = true;
   }
 
   onMount(() => {
@@ -378,6 +432,61 @@
         layerControl = L.control.layers(baseLayers, {}, { position: 'topright', collapsed: false });
         layerControl.addTo(map);
 
+        // Initialize drawing feature group
+        drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+
+        // Create draw control
+        drawControl = new (L as any).Control.Draw({
+          draw: {
+            polygon: {
+              allowIntersection: false,
+              shapeOptions: {
+                color: '#3388ff',
+                fillOpacity: 0.3
+              }
+            },
+            polyline: {
+              shapeOptions: {
+                color: '#3388ff'
+              }
+            },
+            rectangle: {
+              shapeOptions: {
+                color: '#3388ff',
+                fillOpacity: 0.3
+              }
+            },
+            circle: {
+              shapeOptions: {
+                color: '#3388ff',
+                fillOpacity: 0.3
+              }
+            },
+            marker: true,
+            circlemarker: false
+          },
+          edit: {
+            featureGroup: drawnItems,
+            remove: true
+          }
+        });
+
+        // Handle draw events
+        map.on((L as any).Draw.Event.CREATED, (e: any) => {
+          const layer = e.layer;
+          drawnItems?.addLayer(layer);
+          pushLog('system', true, `Drew ${e.layerType}: ${JSON.stringify(layer.toGeoJSON())}`);
+        });
+
+        map.on((L as any).Draw.Event.EDITED, (e: any) => {
+          pushLog('system', true, `Edited ${e.layers.getLayers().length} feature(s)`);
+        });
+
+        map.on((L as any).Draw.Event.DELETED, (e: any) => {
+          pushLog('system', true, `Deleted ${e.layers.getLayers().length} feature(s)`);
+        });
+
         setupResizeObserver();
         window.addEventListener('resize', onWin);
       }
@@ -398,10 +507,25 @@
     return null;
   }
 
+  function getVectorPathForNode(n: NodeData, i: number): string | null {
+    const out = lastOutputs[n.id];
+    if (out && typeof out === 'object' && out.type === 'vector' && out.path) return out.path;
+    if (n.type === 'vector.input' && typeof nodes[i].args?.path === 'string') return nodes[i].args.path;
+    return null;
+  }
+
   async function previewNode(n: NodeData, i: number) {
     if (!map || !layerControl) { alert('Map not ready yet.'); return; }
+    
+    // Check if it's a vector or raster node
+    const vectorPath = getVectorPathForNode(n, i);
+    if (vectorPath) {
+      await previewVectorNode(n, i, vectorPath);
+      return;
+    }
+    
     const pth = getRasterPathForNode(n, i);
-    if (!pth) { alert('No raster path available. Run the pipeline or set args.path for raster.input.'); return; }
+    if (!pth) { alert('No raster/vector path available. Run the pipeline or set args.path.'); return; }
 
     const id = n.id;
     await fetch('/preview/register', {
@@ -433,6 +557,86 @@
       map.fitBounds(bounds, { padding: [10, 10], animate: true });
     } catch (e) {
       console.warn('Failed to get bounds for zoom:', e);
+    }
+  }
+
+  async function previewVectorNode(n: NodeData, i: number, vectorPath: string) {
+    if (!map || !layerControl) { alert('Map not ready yet.'); return; }
+    
+    const id = n.id;
+    
+    // Register vector with backend
+    try {
+      const regResponse = await fetch('/preview/vector/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, path: vectorPath })
+      });
+      
+      if (!regResponse.ok) {
+        const err = await regResponse.text();
+        alert(`Failed to register vector: ${err}`);
+        return;
+      }
+      
+      // Fetch GeoJSON
+      const geojson = await fetch(`/preview/vector/${id}/geojson`).then(r => r.json());
+      
+      // Remove existing layer if any
+      if (overlayLayers.has(id)) {
+        const existingLayer = overlayLayers.get(id)!;
+        map.removeLayer(existingLayer);
+        layerControl.removeLayer(existingLayer);
+        overlayLayers.delete(id);
+      }
+      
+      // Create GeoJSON layer with styling
+      const geoJsonLayer = L.geoJSON(geojson, {
+        style: (feature) => ({
+          color: '#3388ff',
+          weight: 2,
+          opacity: 0.8,
+          fillOpacity: 0.3
+        }),
+        pointToLayer: (feature, latlng) => {
+          return L.circleMarker(latlng, {
+            radius: 6,
+            fillColor: '#3388ff',
+            color: '#fff',
+            weight: 1,
+            opacity: 1,
+            fillOpacity: 0.7
+          });
+        },
+        onEachFeature: (feature, layer) => {
+          // Add popup with properties
+          if (feature.properties) {
+            const props = Object.entries(feature.properties)
+              .map(([key, val]) => `<b>${key}:</b> ${val}`)
+              .join('<br/>');
+            layer.bindPopup(props);
+          }
+        }
+      });
+      
+      const layerName = `📍 ${n.label} (${n.id})`;
+      overlayLayers.set(id, geoJsonLayer);
+      geoJsonLayer.addTo(map);
+      layerControl.addOverlay(geoJsonLayer, layerName);
+      
+      // Fetch bounds and zoom
+      try {
+        const b = await fetch(`/preview/vector/${id}/bounds`).then(r => r.json());
+        const [west, south, east, north] = b.bounds;
+        const bounds = L.latLngBounds([south, west], [north, east]);
+        map.fitBounds(bounds, { padding: [20, 20], animate: true });
+      } catch (e) {
+        console.warn('Failed to get vector bounds:', e);
+      }
+      
+    } catch (error) {
+      console.error('Error previewing vector:', error);
+      alert(`Error previewing vector: ${error}`);
     }
   }
 
@@ -842,6 +1046,14 @@ function loadWorkflow() {
       <button class="icon-btn" title="Clear map layers" on:click={clearOverlayLayers} disabled={overlayLayers.size === 0}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 3l9 5-9 5-9-5 9-5zm0 8l9 5-9 5-9-5" stroke="currentColor" stroke-width="2" fill="none" stroke-linejoin="round"/></svg>
         <span>Layers</span>
+      </button>
+      <button class="icon-btn" title={isDrawingEnabled ? 'Disable drawing' : 'Enable drawing'} on:click={toggleDrawing}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>{isDrawingEnabled ? 'Drawing' : 'Draw'}</span>
+      </button>
+      <button class="icon-btn" title="Export drawn features" on:click={exportDrawnFeatures} disabled={!drawnItems || drawnItems.getLayers().length === 0}>
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Export</span>
       </button>
       <button class="icon-btn" title="Toggle theme" on:click={() => theme = theme === 'dark' ? 'light' : 'dark'}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" stroke="currentColor" stroke-width="2" fill="none"/></svg>

@@ -58,3 +58,6 @@ saterys/web/node_modules/
 node_modules/
 
 .pypi/
+
+# Data cache directory
+data/
