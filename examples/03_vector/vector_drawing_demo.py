@@ -15,7 +15,8 @@ Usage:
 5. Click "Export Shapefile" to download as a ZIP file
 """
 
-# Example: Programmatically creating and registering vector data
+# Note: This demo uses FastAPI TestClient for programmatic API access.
+# In production, you would use requests library or similar HTTP client.
 from fastapi.testclient import TestClient
 from saterys.app import app
 

@@ -108,8 +108,10 @@ Content-Type: application/json
 - **Point** / **MultiPoint**: Individual locations
 - **LineString** / **MultiLineString**: Routes, paths, networks
 - **Polygon** / **MultiPolygon**: Areas, boundaries, study regions
-- **Circle**: Circular regions (converted to polygons on export)
-- **Rectangle**: Rectangular areas (converted to polygons)
+- **Circle**: Circular regions (automatically converted to polygons with 64 vertices on export)
+- **Rectangle**: Rectangular areas (automatically converted to polygons on export)
+
+**Note**: Leaflet Draw creates Circle and Rectangle geometries as special types, but these are automatically converted to standard Polygon geometries when saving or exporting to maintain compatibility with GeoJSON and shapefile standards.
 
 ## Feature Properties
 

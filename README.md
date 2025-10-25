@@ -196,19 +196,17 @@ def process_raster(input_raster):
 
 Draw and analyze vector features directly on the map:
 
-```bash
-# 1. Start SATERYS and open the web interface
-# 2. Use drawing tools on the map:
-#    - Click marker icon to draw points
-#    - Click polyline icon to draw lines
-#    - Click polygon icon to draw areas
-# 3. Click "Load Vectors" to visualize drawn features
-# 4. Click "Export Shapefile" to download as ZIP
+**Using the Web Interface:**
+1. Start SATERYS and open the web interface
+2. Use drawing tools on the map:
+   - Click marker icon to draw points
+   - Click polyline icon to draw lines
+   - Click polygon icon to draw areas
+3. Click "Load Vectors" to visualize drawn features
+4. Click "Export Shapefile" to download as ZIP
 
-# Or use the API programmatically:
-```
+**Using the API Programmatically:**
 
-**Example Vector Data Registration:**
 ```python
 import requests
 
