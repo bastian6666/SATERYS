@@ -417,7 +417,7 @@
         map.addControl(drawControl);
 
         // Handle drawn features
-        map.on(L.Draw.Event.CREATED, (e: any) => {
+        map.on((L as any).Draw.Event.CREATED, (e: any) => {
           const layer = e.layer;
           drawnItems?.addLayer(layer);
           pushLog('vector', true, `Created ${e.layerType}`);
@@ -948,7 +948,8 @@ async function fetch3DBuildingsForView() {
     });
     
     if (features.length > 0) {
-      buildingsGeoJSONLayer = L.geoJSON({ type: 'FeatureCollection', features }, {
+      // cast to GeoJSON.FeatureCollection to satisfy TypeScript typings
+      buildingsGeoJSONLayer = L.geoJSON(({ type: 'FeatureCollection', features } as GeoJSON.FeatureCollection), {
         style: (feature: any) => {
           const height = feature?.properties?.height || DEFAULT_BUILDING_HEIGHT;
           const brightness = Math.max(0.3, Math.min(1, height / 50));
