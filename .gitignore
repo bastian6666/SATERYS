@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Plugin builds (keep source, ignore compiled)
+saterys/web/plugins/@saterys/*/dist/
+saterys/web/plugins/@saterys/*/node_modules/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
