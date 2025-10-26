@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "saterys_plugin_starter"
+version = "0.1.0"
+description = "Starter plugin for SATERYS demonstrating the plugin API"
+
+dependencies = []
+
+[project.entry-points."saterys.plugins"]
+starter = "saterys_plugin_starter:register"
+
+[tool.setuptools]
+packages = ["saterys_plugin_starter"]
