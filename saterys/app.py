@@ -10,6 +10,8 @@ import importlib.util
 import os
 import sys
 from .scheduling import pipeline_router, scheduler
+from .server.plugins import plugin_router
+from .server.bootstrap import load_plugins, CoreBridge
 
 # ------------------------------------------------------------------------------
 # FastAPI app + CORS
@@ -18,6 +20,9 @@ app = FastAPI()
 
 # Register the pipeline scheduling API
 app.include_router(pipeline_router)
+
+# Register the plugin API router
+app.include_router(plugin_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -406,6 +411,23 @@ def root():
 async def _start_scheduler():
     if not scheduler.running:
         scheduler.start()
+
+@app.on_event("startup")
+async def _load_plugins():
+    """Load all registered plugins on startup"""
+    # Create stub require_jwt if auth doesn't exist
+    try:
+        from .auth import require_jwt
+    except Exception:
+        def require_jwt():
+            """Stub authentication - returns no-op dependency"""
+            def _noop(): 
+                return None
+            return _noop
+    
+    # Load plugins with CoreBridge
+    core = CoreBridge(plugin_router, require_jwt())
+    load_plugins(core)
 
 @app.on_event("shutdown")
 async def _stop_scheduler():
