@@ -111,7 +111,7 @@
 
   // Plugin toolbar items
   let pluginToolbarItems: any[] = [];
-  $: pluginToolbarItems = listToolbar();
+  $: pluginToolbarItems = listToolbar().filter(item => item.id !== 'hello' && item.label !== 'Hello');
 
   // Start with ZERO nodes (changed)
   let nodes: NodeData[] = [];
