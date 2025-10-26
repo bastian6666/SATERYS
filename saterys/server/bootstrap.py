@@ -7,6 +7,8 @@ and provide a register(core: CoreBridge) function to add routes and access core 
 """
 from importlib.metadata import entry_points
 from typing import Callable
+import sys
+import os
 
 
 class CoreBridge:
@@ -43,3 +45,22 @@ def load_plugins(core: CoreBridge):
             print(f"✓ Loaded plugin: {ep.name} ({ep.value})")
         except Exception as e:
             print(f"✗ Failed to load plugin {ep.name}: {e}")
+    
+    # Also try to load plugins from ./plugins directory (development mode)
+    plugins_dir = os.path.join(os.getcwd(), "plugins")
+    if os.path.isdir(plugins_dir) and plugins_dir not in sys.path:
+        sys.path.insert(0, plugins_dir)
+        
+    # Try loading common plugin names
+    dev_plugins = ["saterys_plugin_starter"]
+    for plugin_name in dev_plugins:
+        try:
+            module = __import__(plugin_name)
+            if hasattr(module, 'register'):
+                module.register(core)
+                print(f"✓ Loaded dev plugin: {plugin_name}")
+        except ImportError:
+            pass  # Plugin not available in dev mode
+        except Exception as e:
+            print(f"✗ Failed to load dev plugin {plugin_name}: {e}")
+

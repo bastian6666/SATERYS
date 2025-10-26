@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "npm run build:plugins && vite build",
+    "build:plugins": "cd plugins/@saterys/plugin-starter && npm install && npm run build"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "3.1.2",

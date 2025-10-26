@@ -1,0 +1,12 @@
+{
+  "name": "@saterys/plugin-starter",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}
