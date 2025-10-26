@@ -11,7 +11,7 @@
 
 **A modern geospatial pipeline builder with interactive node-based workflows**
 
-[📖 Documentation](#-documentation) • [🚀 Quick Start](#-quick-start) • [🎯 Examples](#-examples) • [🧩 Plugins](#-creating-plugins)
+[📖 Documentation](#-documentation) • [🚀 Quick Start](#-quick-start) • [🎯 Examples](#-examples) • [🔌 Plugins](#-plugins)
 
 </div>
 
@@ -232,6 +232,75 @@ POST /preview/register
 # Get map tiles
 GET /preview/tile/{id}/{z}/{x}/{y}.png
 ```
+
+---
+
+## 🔌 Plugins
+
+SATERYS features a powerful plugin-first architecture that allows you to extend functionality without modifying the core.
+
+### Plugin System
+
+The plugin system provides two extension points:
+
+- **Backend Plugins (Python)**: Add new REST API endpoints using FastAPI
+- **Frontend Plugins (TypeScript)**: Add toolbar buttons, menus, canvas overlays, and custom nodes
+
+### Quick Start: Running the Demo
+
+1. **Build the frontend** (includes plugin build):
+   ```bash
+   cd saterys/web
+   npm install
+   npm run build
+   ```
+
+2. **Run the server**:
+   ```bash
+   cd ../..
+   saterys
+   ```
+
+3. **Access the UI** at `http://localhost:8000`
+
+4. **Click "Hello Plugin"** button in the toolbar
+   - Shows toast notification
+   - Calls `/plugins/starter/echo` backend endpoint
+   - Displays "Echo OK" on success
+
+### Creating Your Own Plugins
+
+**Backend Plugin Structure:**
+```
+plugins/
+  my_plugin/
+    __init__.py          # Plugin code
+    pyproject.toml       # Entry point registration
+```
+
+**Frontend Plugin Structure:**
+```
+saterys/web/plugins/
+  @saterys/my-plugin/
+    src/index.ts         # Plugin code
+    tsconfig.json        # TypeScript config
+    package.json         # Build scripts
+```
+
+See [`docs/plugin-api.md`](docs/plugin-api.md) for complete documentation including:
+- Backend plugin API with FastAPI router integration
+- Frontend registry functions (toolbar, menus, overlays, nodes)
+- AppContext API for accessing core services
+- Authentication integration
+- Best practices and examples
+
+### Starter Plugins
+
+The repository includes fully-functional starter plugins:
+- **Python**: `plugins/saterys_plugin_starter/` - Echo endpoint example
+- **UI**: `saterys/web/plugins/@saterys/plugin-starter/` - Toolbar button + API call
+
+Use these as templates for creating your own plugins!
 
 ---
 
