@@ -3,6 +3,9 @@
   import { Svelvet, Node } from 'svelvet';
   import { onMount, tick, onDestroy} from 'svelte';
 
+  // Plugin system imports
+  import { setContext, getContext, type AppContext } from './core/context';
+  import { listToolbar, listOverlays } from './core/registry';
 
   // Leaflet
   // @ts-ignore
@@ -33,6 +36,82 @@
   // Theme
   let theme: 'dark' | 'light' = 'dark';
   $: (document?.body && (document.body.dataset.theme = theme));
+
+  // Toast messages (simple implementation)
+  let toastMessage = '';
+  let toastType: 'info' | 'success' | 'error' = 'info';
+  let toastVisible = false;
+  
+  function showToast(message: string, type: 'info' | 'success' | 'error' = 'info') {
+    toastMessage = message;
+    toastType = type;
+    toastVisible = true;
+    setTimeout(() => { toastVisible = false; }, 3000);
+  }
+
+  // Initialize AppContext for plugins
+  const appContext: AppContext = {
+    api: {
+      fetch: async (path: string, init?: RequestInit) => {
+        // Prefix with base URL if needed
+        const url = path.startsWith('http') ? path : path;
+        return fetch(url, init);
+      }
+    },
+    jobs: {
+      run: async (label: string, task: (report: (p: number) => void) => Promise<void>) => {
+        // Simple job runner - could be enhanced to show progress
+        try {
+          await task((p) => {
+            // Progress callback - could update UI
+            console.log(`${label}: ${p}%`);
+          });
+        } catch (e: any) {
+          showToast(`Job failed: ${e?.message || e}`, 'error');
+        }
+      }
+    },
+    commands: {
+      execute: async (cmd: any) => {
+        try {
+          await cmd.do();
+        } catch (e: any) {
+          showToast(`Command failed: ${e?.message || e}`, 'error');
+        }
+      }
+    },
+    layers: {
+      addFromId: (id: string) => {
+        // Stub implementation
+        console.log('addFromId:', id);
+      },
+      remove: (id: string) => {
+        // Stub implementation
+        console.log('remove layer:', id);
+      },
+      getSelected: () => [],
+      firstRaster: () => null
+    },
+    selection: {
+      firstRaster: () => null
+    },
+    toast: {
+      info: (msg: string) => showToast(msg, 'info'),
+      success: (msg: string) => showToast(msg, 'success'),
+      error: (msg: string) => showToast(msg, 'error')
+    },
+    entitlements: {
+      has: (flag: string) => true // Stub - always allow
+    },
+    theme
+  };
+
+  // Set context for plugins to access
+  setContext(appContext);
+
+  // Plugin toolbar items
+  let pluginToolbarItems: any[] = [];
+  $: pluginToolbarItems = listToolbar();
 
   // Start with ZERO nodes (changed)
   let nodes: NodeData[] = [];
@@ -1086,6 +1165,23 @@ function loadWorkflow() {
     </div>
 
     <div class="right">
+      <!-- Plugin toolbar items -->
+      {#each pluginToolbarItems as item}
+        <button 
+          class="icon-btn plugin-btn" 
+          title={item.label || item.id}
+          on:click={() => item.run(getContext())}
+        >
+          {#if item.icon}
+            {@html item.icon}
+          {/if}
+          {#if item.label}
+            <span>{item.label}</span>
+          {/if}
+        </button>
+      {/each}
+      
+      <!-- Existing toolbar buttons -->
       <button class="icon-btn" title={running ? 'Running…' : 'Run pipeline'} on:click={runPipeline} disabled={running}>
         <svg viewBox="0 0 24 24" width="18" height="18"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
         <span>Run</span>
@@ -1488,6 +1584,13 @@ function loadWorkflow() {
   </div>
 </div>
 
+<!-- Toast notifications -->
+{#if toastVisible}
+  <div class="toast toast-{toastType}">
+    {toastMessage}
+  </div>
+{/if}
+
 <style>
   /* Color Variables (harmonized with manual labeler look) */
   :root {
@@ -1702,4 +1805,38 @@ function loadWorkflow() {
   .logs-body li.ok { color: #d7f5dd; }
   .logs-body li.err { color: #ffd6d6; }
   .logs-body code { background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 999px; margin-right: 6px; }
+
+  /* Toast notifications */
+  .toast {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    background: #1f2937;
+    color: #e5e7eb;
+    border: 1px solid var(--border);
+    z-index: 9999;
+    animation: slideIn 0.3s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+  .toast-info {
+    border-left: 4px solid #3b82f6;
+  }
+  .toast-success {
+    border-left: 4px solid #10b981;
+  }
+  .toast-error {
+    border-left: 4px solid #ef4444;
+  }
+  @keyframes slideIn {
+    from {
+      transform: translateX(400px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
+  }
 </style>
