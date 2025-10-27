@@ -20,7 +20,6 @@ registerToolbar({
   group: 'analysis',
   label: 'Hello Plugin',
   order: 100,
-  when: 'false',
   async run() {
     const ctx = getContext();
     ctx.toast.info('Plugin button clicked!');

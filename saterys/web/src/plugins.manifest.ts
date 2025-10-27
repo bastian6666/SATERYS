@@ -7,6 +7,6 @@
  */
 
 // Import the starter plugin
-import '../plugins/@saterys/plugin-starter/dist/index.js';
+//import '../plugins/@saterys/plugin-starter/dist/index.js';
 
 export {};
