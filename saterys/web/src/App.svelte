@@ -111,7 +111,7 @@
 
   // Plugin toolbar items
   let pluginToolbarItems: any[] = [];
-  $: pluginToolbarItems = listToolbar().filter(item => item.id !== 'starter.hello');
+  $: pluginToolbarItems = listToolbar();
 
   // Start with ZERO nodes (changed)
   let nodes: NodeData[] = [];
@@ -1168,7 +1168,7 @@ function loadWorkflow() {
       <!-- Plugin toolbar items -->
       {#each pluginToolbarItems as item}
         <button 
-          class="icon-btn plugin-btn" 
+          class="icon-btn plugin-btn {item.id === 'starter.hello' ? 'hidden-plugin' : ''}" 
           title={item.label || item.id}
           on:click={() => item.run(getContext())}
         >
@@ -1639,6 +1639,11 @@ function loadWorkflow() {
   .icon-btn:disabled { opacity:.6; cursor: default; }
   .icon-btn.primary { border-color:#3b82f6; }
   .icon-btn.ghost { background:transparent; border-color:var(--border); }
+
+  /* Hide specific plugin buttons */
+  .hidden-plugin {
+    display: none !important;
+  }
 
 
   .runone-btn {
